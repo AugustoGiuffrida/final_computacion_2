@@ -1,4 +1,4 @@
-# SafePic — Definición de la aplicación
+# Definición de la aplicación
 
 *Servicio de anonimización y sanitización de imágenes para publicación segura.*
 
@@ -16,7 +16,7 @@ documenta eventos) hay que **sanitizarla**: cubrir caras, borrar metadatos, opti
 peso. Hacerlo a mano, foto por foto, no escala; y el procesamiento (en particular la
 detección de caras) es **CPU-bound y lento**.
 
-**SafePic** es un servicio de red que resuelve esto: recibe imágenes de múltiples
+**La aplicación** es un servicio de red que resuelve esto: recibe imágenes de múltiples
 clientes concurrentes, encola el procesamiento pesado en una cola distribuida, y
 permite consultar el estado y descargar los resultados. La recepción nunca se bloquea
 por el procesamiento, y la capacidad se escala agregando workers.
