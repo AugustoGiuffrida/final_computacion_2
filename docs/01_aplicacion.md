@@ -68,10 +68,18 @@ Notas de diseño:
 
 ## 5. Entidades del dominio
 
-- **Usuario**: identificado por nombre pasado por CLI (`--user`). Sin contraseñas en v1.
-- **Trabajo (job)**: una solicitud de procesamiento. `job_id` (UUID), usuario,
-  operación, parámetros, imagen de entrada, estado, timestamps, resultado o error.
-- **Artefacto**: archivo producido (imagen procesada y/o informe JSON).
+- **Usuario**: identificado por nombre pasado por CLI (`--user`). Sin contraseñas en v1;
+  el nombre se declara, no se autentica (ver limitación en
+  [04_protocolo.md](04_protocolo.md), sección 3.3).
+- **Trabajo (job)**: una solicitud de procesamiento. Se identifica con un **`job_id`
+  (UUID v4)** que genera el servidor al aceptarlo y devuelve al cliente. Contiene además
+  usuario, operación, parámetros, imagen de entrada, estado, timestamps y resultado o
+  error. **Pertenece al usuario que lo creó**: solo él puede consultarlo y descargarlo.
+- **Artefacto**: cada archivo producido por un trabajo — la imagen procesada, o un
+  informe JSON en el caso de `inspect`. Se identifica por un **nombre dentro de su
+  trabajo**, de modo que el par **`(job_id, artifact)`** direcciona de forma única
+  cualquier archivo del sistema. Un trabajo puede producir más de uno; la consulta de
+  estado devuelve la lista disponible.
 - **Evento de auditoría**: registro de cada transición, persistido por el auditor.
 
 ## 6. Ciclo de vida de un trabajo

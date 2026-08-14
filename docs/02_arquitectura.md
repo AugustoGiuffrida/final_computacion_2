@@ -183,118 +183,34 @@ Tres lugares, tres roles:
 Cada dato en el lugar que le corresponde: archivos pesados al disco, estado transitorio
 a Redis, historia a la base de datos.
 
-## 5. Protocolo cliente-servidor
+## 5. Protocolo cliente-servidor (resumen)
 
-Los sockets garantizan que la información llegue íntegra, pero no definen **qué**
-enviar ni **cómo interpretarlo**. Eso lo define el protocolo de aplicación.
+Los sockets garantizan que la información llegue íntegra, pero no definen **qué** enviar
+ni **cómo interpretarlo**. Eso lo define un **protocolo propio de capa de aplicación**,
+construido sobre TCP — el mismo lugar que ocupa HTTP.
 
-### 5.1 Modelo de diálogo
+La especificación completa está en [04_protocolo.md](04_protocolo.md). Lo esencial:
 
-La comunicación sigue el esquema **pedido → respuesta**, siempre iniciado por el
-cliente; el servidor nunca habla por su cuenta. Una ejecución del cliente equivale a
-**una conexión**, que se abre al arrancar y se cierra al terminar. Dentro de esa
-conexión puede haber varios pedidos, siempre **de a uno por vez**: el cliente espera la
-respuesta completa antes de enviar el siguiente.
+**Identidad.** Cada `submit` genera un **`job_id`** (UUID v4) que el cliente conserva
+para consultar y descargar. Cada archivo producido es un **artefacto** con nombre propio
+dentro del trabajo, de modo que el par `(job_id, artifact)` direcciona cualquier archivo
+del sistema. `status` devuelve la lista de artefactos disponibles, así que el cliente
+nunca adivina qué puede descargar.
 
-Esa decisión —no permitir pedidos superpuestos— simplifica el protocolo: como cada
-respuesta corresponde necesariamente al último pedido enviado, **no hacen falta
-identificadores de correlación**. Si quisiéramos varios pedidos en vuelo, habría que
-numerarlos y que el servidor devolviera ese número en cada respuesta. No lo
-necesitamos: el paralelismo del sistema está en los workers, no en la conexión.
+**Formato.** Todos los mensajes usan *length-prefixed framing*: 4 bytes con la longitud
+del header, header JSON con los datos del pedido, y payload binario opcional cuyo tamaño
+se declara en el header. Es necesario porque TCP entrega un flujo continuo sin marcas
+que separen un mensaje del siguiente.
 
-El caso más completo es `submit --wait`:
+**Diálogo.** Pedido → respuesta, siempre iniciado por el cliente, uno por vez. Una
+conexión por ejecución del cliente, que puede transportar varios pedidos. Cuatro tipos:
+`submit`, `status`, `download`, `history`.
 
-```
-Cliente                                        Servidor
-   │                                              │
-   │──── conecta (TCP) ──────────────────────────►│  accept: socket dedicado
-   │                                              │
-   │──── submit (op + imagen) ───────────────────►│  valida, guarda, encola
-   │◄─── {job_id: "a3f…", status: "QUEUED"} ──────│
-   │                                              │
-   │──── status (job_id) ────────────────────────►│  consulta el result backend
-   │◄─── {status: "PROCESSING"} ──────────────────│
-   │                          (espera ~1 s)       │
-   │──── status (job_id) ────────────────────────►│
-   │◄─── {status: "DONE"} ────────────────────────│
-   │                                              │
-   │──── download (job_id) ──────────────────────►│  lee el resultado del volumen
-   │◄─── header + imagen procesada ───────────────│
-   │                                              │
-   │──── cierra ─────────────────────────────────►│  detecta EOF, libera recursos
-```
+**Por qué protocolo propio y no HTTP**: HTTP corre sobre sockets, así que usarlo no
+eliminaría esa capa sino que la ocultaría — y es justamente la capa que el trabajo debe
+demostrar. Además el conjunto de operaciones es chico y cerrado, y la transferencia
+binaria directa evita el 33% de sobrecarga que impondría base64.
 
-El cliente **consulta periódicamente** en lugar de esperar un aviso del servidor. Es la
-opción simple y suficiente: mantiene un único sentido de iniciativa y evita tener que
-manejar notificaciones no solicitadas. Como es una espera, la hace con
-`await asyncio.sleep(...)`, sin bloquear.
-
-### 5.2 Delimitación de mensajes
-
-TCP entrega la información completa y en orden, pero **no conserva la noción de
-mensaje**: la conexión es un flujo continuo, sin marcas que indiquen dónde termina un
-envío y empieza el siguiente. Si el cliente manda un pedido seguido de una imagen, el
-servidor recibe todo pegado.
-
-La solución es **anunciar la longitud antes del contenido**: cada mensaje empieza con un
-campo de tamaño fijo que dice cuánto mide lo que sigue. El receptor lee ese campo
-—siempre la misma cantidad de bytes, así que no hay ambigüedad— y con ese número sabe
-exactamente cuánto leer después.
-
-### 5.3 Formato del mensaje
-
-```
-+----------------+----------------------+----------------------+
-| 4 bytes u32 BE | header JSON (UTF-8)  | payload binario      |
-| long. header   |                      | (opcional)           |
-+----------------+----------------------+----------------------+
-```
-
-1. **Prefijo de longitud**: 4 bytes, entero sin signo en big-endian (orden de red).
-   Indica cuánto mide el header.
-2. **Header**: objeto JSON con los datos del pedido. Siempre incluye `type` (qué se
-   pide), `user` (quién) y `payload_size` (cuántos bytes binarios vienen después, 0 si
-   ninguno), más los campos propios de cada tipo.
-3. **Payload**: la imagen, tal cual, sin transformaciones.
-
-**Por qué esta combinación.** El header es JSON porque los datos del pedido son
-estructurados y variables: se lee sin herramientas y se extiende agregando campos sin
-romper nada. El payload va crudo porque es lo más eficiente: cualquier codificación
-textual (base64) lo agrandaría un tercio sin ningún beneficio.
-
-### 5.4 Tipos de pedido
-
-| Tipo (cliente → servidor) | Campos extra                | Payload | Respuesta del servidor            |
-|---------------------------|-----------------------------|---------|-----------------------------------|
-| `submit`                  | `op`, `params`, `filename`  | imagen  | `{job_id, status: "QUEUED"}`      |
-| `status`                  | `job_id`                    | —       | `{job_id, status, error?}`        |
-| `download`                | `job_id`                    | —       | header + payload con el resultado |
-| `history`                 | `limit`                     | —       | `{jobs: [...]}`                   |
-
-- **`submit`** es el único pedido del cliente con payload. El servidor valida, guarda,
-  encola y responde de inmediato con el identificador. **No espera al resultado**: esa
-  respuesta rápida es la que le permite seguir atendiendo a los demás.
-- **`status`** consulta el result backend. Operación liviana, pensada para llamarse
-  repetidamente.
-- **`download`** es el inverso de `submit`: sin payload de ida, con payload de vuelta.
-- **`history`** no toca Redis ni el volumen: el servidor se lo pregunta al auditor.
-
-### 5.5 Errores y desconexiones
-
-Ante un error el servidor responde con un mensaje de tipo `error`, con código y
-descripción: `{type: "error", code, message}`. Casos previstos: operación inexistente,
-imagen corrupta o de formato no soportado, tamaño excedido, trabajo inexistente, y
-descarga de un trabajo que aún no terminó.
-
-**Un error nunca corta la conexión**: es una respuesta como cualquier otra. Cortar sería
-más simple de programar, pero le impediría al cliente distinguir un pedido rechazado de
-una caída del servidor.
-
-Las desconexiones se detectan solas: si el cliente cierra o se cae, la lectura termina
-con EOF, y la corrutina de ese cliente cierra su socket y libera recursos sin afectar a
-las demás. Un trabajo ya encolado **sigue su curso** aunque el cliente desaparezca — el
-worker no sabe ni le importa si quien lo pidió sigue conectado, y el resultado queda
-disponible para cuando vuelva a consultarlo.
 
 ## 6. Mensajes hacia los workers
 
