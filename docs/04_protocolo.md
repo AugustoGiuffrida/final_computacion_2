@@ -358,12 +358,235 @@ Es el pedido inverso al `submit`: sin payload de ida, con payload de vuelta.
  ], "payload_size": 0}
 ```
 
-Es el único pedido que el servidor no resuelve por sí mismo: se lo consulta al **proceso
-auditor**, que es quien tiene el historial en SQLite.
+Es el único pedido que se resuelve contra SQLite. El servidor **lee la base
+directamente, en modo solo lectura**, con `asyncio.to_thread(...)` para no bloquear el
+event loop. No le pregunta al auditor: la `mp.Queue` es de una sola dirección
+(servidor → auditor) y agregar un canal de vuelta obligaría a numerar pedidos y
+respuestas sin ninguna ganancia.
+
+Esto no contradice que el auditor sea el único escritor. **SQLite admite muchos lectores
+simultáneos**; lo que no admite son escritores concurrentes. El diseño respeta
+exactamente ese modelo: un solo escritor (el auditor) y los lectores que hagan falta.
+
+La consulta filtra por el usuario del pedido, así que cada cliente ve solo sus propios
+trabajos, ordenados del más reciente al más antiguo.
 
 ---
 
-## 6. Errores
+## 6. Cómo funciona cada operación, paso a paso
+
+### 6.1 De dónde saca el servidor la información de un trabajo
+
+Las tres consultas (`status`, `download`, `history`) empiezan por lo mismo: resolver el
+`job_id`. El servidor tiene **tres fuentes**, y cada una cumple un papel distinto.
+
+| Fuente | Qué contiene | Para qué se usa |
+|---|---|---|
+| **Índice en memoria** | los trabajos aceptados desde que el servidor arrancó: usuario, operación, estado y ruta de salida | resolver el caso común, sin tocar el disco |
+| **SQLite** (solo lectura) | el historial completo y permanente | trabajos de ejecuciones anteriores del servidor, y el `history` |
+| **Redis** (result backend) | el estado vivo de las tareas en curso | distinguir `QUEUED` de `PROCESSING` |
+
+**Orden de resolución**: primero el índice en memoria; si no está ahí, SQLite; si tampoco,
+`JOB_NOT_FOUND`. Recién con el trabajo resuelto se verifica que **pertenezca al usuario**
+que pregunta.
+
+#### Por qué existe el índice en memoria
+
+No es una optimización: **resuelve una condición de carrera concreta**.
+
+Cuando el servidor acepta un `submit`, deposita el evento en la cola del auditor y
+responde de inmediato, **sin esperar** a que el auditor escriba en SQLite — esa es
+justamente la razón de ser del IPC asíncrono. Pero con `--wait` el cliente consulta el
+estado un segundo después. Si el servidor buscara solo en SQLite, es perfectamente
+posible que la fila todavía no esté escrita y respondiera `JOB_NOT_FOUND` **sobre un
+trabajo que él mismo acaba de aceptar**.
+
+El índice cierra esa ventana: el servidor conoce sus propios trabajos sin depender de que
+el auditor ya los haya persistido. Las entradas de trabajos terminados se descartan unos
+minutos después, cuando su escritura en SQLite ya está garantizada, de modo que el índice
+queda acotado al trabajo reciente y no crece indefinidamente.
+
+#### Cuándo se consulta Redis (y cuándo no)
+
+Solo se consulta **si el trabajo está en curso**. Un trabajo terminado —`DONE` o
+`ERROR`— se responde desde el índice o desde SQLite, sin tocar Redis.
+
+No es solo economía de consultas. Los resultados de Celery **expiran** en el result
+backend: `result_expires` vale 24 horas por defecto. Un trabajo de la semana pasada ya no
+existe en Redis, pero sigue en SQLite y su archivo sigue en el volumen. Si la descarga
+dependiera de Redis, **dejaría de funcionar al día siguiente**.
+
+De ahí la división: Redis es el estado *vivo* y efímero; SQLite es la verdad *permanente*.
+
+#### Consecuencia para la descarga
+
+**Para un `download`, Redis no se consulta nunca.** Solo se descargan trabajos terminados,
+y tanto su estado como la ruta del archivo salen del índice en memoria o de SQLite. El
+servidor resuelve la descarga por completo con esas dos fuentes más el volumen compartido.
+
+### 6.2 Envío de una imagen (`submit`)
+
+**En el cliente:**
+
+1. Verifica que el archivo exista, que la extensión esté soportada y que no supere el
+   tamaño máximo. Falla localmente si algo no cierra, sin molestar al servidor.
+2. Arma el header con la operación y sus parámetros, y mide el archivo con
+   `os.path.getsize()` para completar `payload_size`.
+3. Envía el header y luego el archivo **en bloques de 64 KB**, con
+   `await writer.drain()` después de cada bloque.
+
+**En el servidor:**
+
+4. Lee el prefijo y el header (algoritmo de la sección 4.4) y valida los campos.
+5. Genera el `job_id` (UUID v4) y crea el directorio `storage/uploads/<job_id>/`.
+6. Lee el payload **en bloques de 64 KB y los escribe directamente en el archivo**,
+   sin acumular la imagen en memoria. Si la conexión se corta antes de completar
+   `payload_size`, `readexactly` lanza excepción y el directorio se descarta.
+7. Verifica que el archivo sea realmente una imagen abriéndolo con Pillow. Si no lo es,
+   responde `INVALID_IMAGE` y borra lo recibido.
+8. Encola la tarea en Celery con `asyncio.to_thread(...)`, para que la llamada
+   bloqueante a Redis no frene el event loop.
+9. Envía los eventos `received` y `queued` al auditor por la `mp.Queue`, y agrega el
+   trabajo a su índice en memoria de trabajos en curso.
+10. Responde `{job_id, status: "QUEUED"}`.
+
+Los pasos 4 a 10 llevan milisegundos: el servidor **nunca espera** a que la imagen se
+procese.
+
+### 6.3 Consulta de estado (`status`)
+
+#### De dónde sale el estado
+
+El estado vive en el **result backend de Celery** (Redis). El servidor lo obtiene con
+`AsyncResult(task_id).state`, ejecutado con `asyncio.to_thread(...)` porque implica una
+consulta de red a Redis.
+
+Celery maneja sus propios nombres de estado, que el servidor traduce a los cuatro del
+protocolo:
+
+| Estado de Celery | Estado del protocolo | Significado |
+|---|---|---|
+| `PENDING` | `QUEUED` | está en la cola, ningún worker lo tomó |
+| `STARTED` | `PROCESSING` | un worker lo está ejecutando |
+| `RETRY` | `PROCESSING` | falló de forma transitoria y se está reintentando |
+| `SUCCESS` | `DONE` | terminó bien |
+| `FAILURE` | `ERROR` | falló definitivamente |
+
+**Dos detalles de configuración que hay que conocer**, porque sin ellos el estado no
+funciona como uno esperaría:
+
+- Por defecto Celery **no informa `STARTED`**: pasa directo de `PENDING` a `SUCCESS`, y
+  el cliente nunca vería `PROCESSING`. Hace falta `task_track_started = True`.
+- `PENDING` en Celery es **ambiguo**: significa tanto "encolado y sin tomar" como
+  "no conozco esta tarea". Si un cliente inventara un `job_id`, Redis respondería
+  `PENDING` y el servidor informaría `QUEUED` sobre un trabajo inexistente. Por eso el
+  servidor **primero verifica que el trabajo exista** —en su índice en memoria o
+  consultando SQLite— y solo entonces consulta Redis. Si no existe, responde
+  `JOB_NOT_FOUND`.
+
+#### El proceso completo
+
+1. El cliente envía `status` con su `job_id`, **por la misma conexión ya abierta**: no
+   se reconecta en cada consulta.
+2. El servidor resuelve el `job_id` según la sección 6.1 (índice en memoria → SQLite) y
+   verifica que **pertenezca al usuario** que pregunta; si no, responde `JOB_NOT_FOUND`
+   o `FORBIDDEN`.
+3. Consulta el estado en el result backend y lo traduce según la tabla.
+4. Si el estado es `DONE`, agrega `has_output` y el `result` de la operación (caras
+   detectadas, metadatos eliminados, informe de `inspect`). Si es `ERROR`, agrega el
+   motivo.
+5. Responde. Cada consulta cuesta una lectura a Redis, del orden del milisegundo.
+
+#### La política de consulta del cliente
+
+Sin `--wait`, el cliente hace **una sola consulta** y termina: muestra el estado y sale.
+
+Con `--wait`, consulta cada **1 segundo** hasta que el estado sea `DONE` o `ERROR`, con
+un límite configurable (`--timeout`, por defecto 300 s). La espera se hace con
+`await asyncio.sleep(1)`, sin bloquear.
+
+Si se agota el tiempo, el cliente avisa y **muestra el `job_id`** para consultarlo más
+tarde. Rendirse a esperar **no cancela nada**: el trabajo sigue su curso en el worker y
+el resultado queda disponible.
+
+#### Por qué consulta periódica y no notificación
+
+Sería posible que el servidor avisara al cliente apenas el trabajo termina, pero eso
+obligaría a que el servidor hable sin que le pregunten, y entonces el cliente tendría que
+estar escuchando en todo momento mientras además envía pedidos — dos flujos simultáneos
+sobre la misma conexión, que habría que distinguir con identificadores.
+
+La consulta periódica mantiene **un único sentido de iniciativa** y hace el protocolo
+mucho más simple. El costo es una lectura a Redis por segundo por cliente en espera, que
+es despreciable.
+
+#### Una garantía importante del orden
+
+Cuando el estado es `DONE`, **el archivo ya está escrito en el disco**. No es casualidad:
+Celery marca la tarea como `SUCCESS` recién cuando la función del worker **retorna**, y la
+función escribe el archivo antes de retornar. Por eso no existe la ventana en que el
+cliente vea `DONE`, pida la descarga y el archivo todavía no exista.
+
+### 6.4 Descarga del resultado (`download`)
+
+**En el servidor, al recibir el pedido:**
+
+1. Resuelve el `job_id` según la sección 6.1 —índice en memoria, y si no está ahí,
+   SQLite— y verifica que **pertenezca al usuario**; si no, `JOB_NOT_FOUND` o
+   `FORBIDDEN`. **Redis no interviene** en ningún paso de la descarga.
+2. Verifica que el estado sea `DONE`. Si sigue en curso responde `NOT_READY`; si falló,
+   `ERROR` con el motivo.
+3. Verifica que el trabajo **genere archivo**. `inspect` no genera ninguno: responde
+   `NO_OUTPUT` e indica que el resultado está en la consulta de estado.
+4. Resuelve la ruta `storage/results/<job_id>/out.<ext>` y obtiene el tamaño exacto con
+   `os.path.getsize()`. **Ese número es el `payload_size`** del header: por eso el
+   servidor puede anunciar cuánto va a enviar antes de empezar a leer el archivo.
+5. Envía el header con `payload_size`, `filename` y `content_type`.
+6. Abre el archivo y lo envía **en bloques de 64 KB**. Después de cada bloque hace
+   `await writer.drain()`.
+
+**En el cliente:**
+
+7. Lee el prefijo y el header, y de ahí obtiene `payload_size`.
+8. Lee exactamente esa cantidad de bytes, **escribiéndolos en disco a medida que
+   llegan**, sin acumular el archivo en memoria.
+9. Guarda el resultado en la ruta que indique `-o`, o con el `filename` sugerido.
+
+#### Por qué se envía en bloques con `drain()`
+
+Es el punto más fino de la descarga. `writer.write()` **no envía**: copia los datos a un
+buffer interno y retorna de inmediato. Si el servidor escribiera un archivo de 20 MB de
+una sola vez, ese buffer crecería hasta contenerlo entero, porque el cliente lo consume
+mucho más lento de lo que el servidor lo produce. Con muchas descargas simultáneas, la
+memoria del servidor se dispararía.
+
+`await writer.drain()` es el freno: suspende la corrutina hasta que el buffer se vacía lo
+suficiente. Así el servidor **envía al ritmo que el cliente puede recibir**, la memoria
+queda acotada, y —al ser un `await`— cada bloque le devuelve el control al event loop
+para atender a los demás clientes.
+
+Es el mismo mecanismo de control de flujo que TCP aplica a nivel de red, pero acá a nivel
+de aplicación.
+
+#### Cómo sabe el cliente que llegó todo
+
+Por el `payload_size` del header. `readexactly(payload_size)` no retorna hasta juntar
+exactamente esa cantidad de bytes, y si la conexión se corta antes lanza una excepción:
+el cliente descarta el archivo parcial e informa el error. **No hace falta un checksum**,
+porque TCP ya garantiza la integridad de lo que entrega y el prefijo de longitud detecta
+cualquier truncamiento.
+
+#### Casos borde
+
+- **El cliente se desconecta a mitad del envío**: la escritura falla con
+  `ConnectionResetError`. El servidor cierra el archivo, libera la conexión y sigue
+  atendiendo al resto. El resultado permanece en disco.
+- **El archivo no está** (fue borrado por la limpieza periódica): responde `INTERNAL`
+  indicando que el resultado ya no está disponible.
+- **Dos clientes descargan el mismo trabajo a la vez**: no hay problema, son lecturas
+  independientes y cada corrutina abre el archivo por su cuenta.
+
+## 7. Errores
 
 Ante cualquier problema el servidor responde con un mensaje de tipo `error`:
 
@@ -390,7 +613,7 @@ distinguir entre un pedido rechazado y una caída del servidor.
 
 ---
 
-## 7. Traza completa de una sesión
+## 8. Traza completa de una sesión
 
 `submit --wait`, que ejercita el protocolo entero sobre una única conexión:
 
@@ -427,7 +650,7 @@ Mientras esta conversación transcurre, el servidor atiende a los demás cliente
 
 ---
 
-## 8. Reglas del diálogo, límites y casos borde
+## 9. Reglas del diálogo, límites y casos borde
 
 **Un pedido por vez.** El cliente envía un pedido y espera la respuesta completa antes de
 enviar el siguiente. Como consecuencia, **no hacen falta identificadores de correlación**

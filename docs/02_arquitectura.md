@@ -44,7 +44,7 @@ tabla es el resumen de la arquitectura:
 | Canal | Une | Alcance | Qué transporta |
 |---|---|---|---|
 | **Socket TCP** | cliente ↔ servidor | entre máquinas | pedidos e imágenes |
-| **multiprocessing.Queue** | servidor ↔ auditor | misma máquina, procesos emparentados | eventos de auditoría |
+| **multiprocessing.Queue** | servidor → auditor (una dirección) | misma máquina, procesos emparentados | eventos de auditoría |
 | **Redis** | servidor ↔ workers | entre máquinas, procesos sin relación | invocaciones y estados |
 | **Volumen compartido** | servidor ↔ workers | mismo sistema de archivos | los archivos de imagen |
 
@@ -79,8 +79,12 @@ Sus responsabilidades:
 - **Guardar la imagen original** en el volumen compartido, bajo `uploads/<job_id>/`.
 - **Encolar la tarea** en Celery, pasándole la ruta y los parámetros.
 - **Notificar cada evento al auditor** por la `multiprocessing.Queue`.
-- Responder consultas de estado (leyendo el result backend) e historial (preguntándole
-  al auditor).
+- Mantener un **índice en memoria** de los trabajos aceptados desde que arrancó (usuario,
+  operación, estado, ruta de salida). Es lo que le permite responder por un trabajo recién
+  creado sin depender de que el auditor ya lo haya persistido.
+- Responder consultas de estado e historial resolviendo el trabajo contra ese índice y,
+  si no está ahí, contra SQLite en modo solo lectura. Consulta el result backend de Celery
+  **solo cuando el trabajo sigue en curso**.
 - Servir las descargas, leyendo el resultado del volumen.
 - Vigilar los trabajos en curso (sección 4.5).
 - Apagarse ordenadamente ante SIGINT/SIGTERM: dejar de aceptar conexiones, cerrar las
@@ -95,12 +99,18 @@ Proceso que el servidor lanza al arrancar, conectado por una `multiprocessing.Qu
 
 Recibe los eventos que el servidor deposita en la cola —trabajo recibido, encolado,
 terminado, fallado— y los persiste en SQLite. Es el **único proceso que escribe** en la
-base, y también quien responde las consultas de historial que le reenvía el servidor.
+base.
 
 Existe por dos razones que se resuelven con una sola decisión. Escribir en disco es una
 operación de espera, y hacerla dentro del event loop congelaría a todos los clientes.
 Y SQLite tolera mal varios escritores simultáneos: al haber uno solo, ese problema
 directamente no se presenta.
+
+**La `mp.Queue` es de una sola dirección** (servidor → auditor) y el servidor nunca
+espera respuesta: deposita el evento y sigue. Cuando necesita *leer* el historial, lee
+SQLite por su cuenta en modo solo lectura, porque **SQLite admite muchos lectores
+simultáneos** — la restricción es solo sobre los escritores. Un canal de vuelta
+obligaría a numerar pedidos y respuestas sin ninguna ganancia.
 
 ### 4.4 Workers
 

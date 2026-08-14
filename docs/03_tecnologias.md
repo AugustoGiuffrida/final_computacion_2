@@ -350,6 +350,18 @@ corrutinas (`gevent`, `eventlet`). Corresponde `prefork` porque nuestras tareas 
 **CPU-bound**, y con hilos el GIL las serializaría. Los pools de hilos sirven para tareas
 I/O-bound (mandar mails, llamar APIs).
 
+### Seguimiento de estados (`task_track_started`)
+
+Por defecto Celery **no informa el estado `STARTED`**: una tarea pasa directamente de
+`PENDING` a `SUCCESS`, de modo que nunca se puede saber si un worker ya la tomó o sigue
+esperando en la cola. Con `task_track_started = True` el worker reporta el estado al
+empezar a ejecutar, que es lo que permite distinguir "encolado" de "procesando".
+
+Hay además una ambigüedad que conviene conocer: **`PENDING` significa tanto "encolado y
+sin tomar" como "no conozco esta tarea"**. Celery no guarda nada en el backend hasta que
+la tarea empieza, así que un identificador inventado devuelve `PENDING` igual que uno
+real en cola. Por eso quien consulta debe verificar por otro medio que la tarea exista.
+
 ### Confirmación de tareas (`acks_late`)
 
 Por defecto Celery confirma el mensaje al broker **apenas lo reserva**, antes de
