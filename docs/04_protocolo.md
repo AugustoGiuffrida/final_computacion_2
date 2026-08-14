@@ -106,33 +106,31 @@ coordinación con nadie, y sigue siendo único aunque mañana haya varios servid
 coherente con el resto del diseño, donde ningún componente necesita un coordinador
 central.
 
-### 3.2 Artefactos: identificar cada archivo producido
+### 3.2 Un trabajo, un archivo
 
-Un trabajo puede producir **más de un archivo**, y no todos son imágenes: `inspect`
-devuelve un informe JSON, mientras que `anonymize` devuelve una imagen. Por eso el
-`job_id` solo no alcanza para direccionar la descarga: hace falta decir **cuál** de los
-archivos del trabajo se quiere.
+**Cada trabajo produce a lo sumo un archivo de salida**, y el `job_id` alcanza para
+identificarlo. No hace falta un segundo nivel de direccionamiento.
 
-Cada archivo producido es un **artefacto**, identificado por un nombre dentro de su
-trabajo. El par **`(job_id, artifact)`** direcciona un archivo de manera única en todo
-el sistema.
+| Operación | Archivo de salida | Datos que devuelve |
+|---|---|---|
+| `inspect` | **ninguno** | el informe de privacidad completo |
+| `anonymize` | la imagen procesada | cuántas caras detectó |
+| `clean` | la imagen procesada | qué metadatos eliminó |
+| `convert` | la imagen convertida | — |
+| `compress` | la imagen comprimida | tamaño original y final |
+| `sanitize` | la imagen saneada | resumen de las tres etapas |
 
-| Operación | Artefactos producidos |
-|---|---|
-| `inspect` | `report.json` |
-| `anonymize` | `out.<ext>` |
-| `clean` | `out.<ext>` |
-| `convert` | `out.<formato>` |
-| `compress` | `out.<ext>` |
-| `sanitize` | `out.<ext>` (resultado final de la cadena) |
+Los **datos** que devuelve cada operación —cuántas caras, qué metadatos se borraron, el
+informe de `inspect`— son unos pocos cientos de bytes y viajan en el campo `result` de la
+respuesta de `status`. No son archivos y no se descargan.
 
-La respuesta de `status` incluye la **lista de artefactos disponibles** con su nombre,
-tamaño y tipo, así que el cliente nunca tiene que adivinar: pregunta el estado y ve qué
-puede descargar. En `download`, el campo `artifact` es **opcional**: si se omite, el
-servidor entrega el primero de la lista, que es el resultado principal.
+Por eso `inspect` es un caso particular: **no genera nada para descargar**. Su resultado
+completo llega en la consulta de estado y el cliente lo muestra por pantalla.
 
-Este diseño deja preparado el terreno para operaciones de salida múltiple —por ejemplo,
-generar miniaturas en tres tamaños— sin necesidad de cambiar el protocolo.
+**Si en el futuro una operación produjera varios archivos** —por ejemplo, miniaturas en
+tres tamaños—, bastaría con agregar un campo `artifact` opcional al `download`. Como el
+header es JSON, ese agregado no rompería ningún cliente existente. No se incluye ahora
+porque ninguna operación de la v1 lo necesita.
 
 ### 3.3 Propiedad: quién puede descargar qué
 
@@ -282,12 +280,21 @@ demás clientes.
 {"type": "status", "user": "augusto", "job_id": "a3f7b2c1-…", "payload_size": 0}
 ```
 
-**Respuesta** (trabajo terminado):
+**Respuesta** (trabajo terminado, con archivo para descargar):
 
 ```json
-{"type": "ok", "job_id": "a3f7b2c1-…", "status": "DONE",
- "artifacts": [{"name": "out.jpg", "bytes": 284915, "content_type": "image/jpeg"}],
- "result": {"faces_detected": 3},
+{"type": "ok", "job_id": "a3f7b2c1-…", "status": "DONE", "has_output": true,
+ "result": {"faces_detected": 3, "bytes": 284915, "content_type": "image/jpeg"},
+ "payload_size": 0}
+```
+
+**Respuesta** (`inspect`, que no genera archivo):
+
+```json
+{"type": "ok", "job_id": "b8e1d4f2-…", "status": "DONE", "has_output": false,
+ "result": {"faces_detected": 2, "gps": {"lat": -32.889, "lon": -68.845},
+            "taken_at": "2026-07-04T18:22:10", "camera": "iPhone 14",
+            "bytes": 3145728},
  "payload_size": 0}
 ```
 
@@ -304,29 +311,29 @@ demás clientes.
  "error": "formato de imagen no soportado", "payload_size": 0}
 ```
 
-Estados posibles: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`. El campo `artifacts` aparece
-solo cuando el estado es `DONE`, y es lo que le indica al cliente qué puede descargar.
+Estados posibles: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`. Los campos `has_output` y
+`result` aparecen solo cuando el estado es `DONE`: el primero le dice al cliente si tiene
+sentido pedir la descarga, el segundo trae los datos que produjo la operación.
 
-### 5.3 `download` — descargar un artefacto
+### 5.3 `download` — descargar el resultado
 
 **Pedido**:
 
 ```json
-{"type": "download", "user": "augusto", "job_id": "a3f7b2c1-…",
- "artifact": "out.jpg", "payload_size": 0}
+{"type": "download", "user": "augusto", "job_id": "a3f7b2c1-…", "payload_size": 0}
 ```
 
-El campo `artifact` es opcional: si se omite, el servidor devuelve el artefacto principal
-(el primero de la lista).
+El `job_id` alcanza: cada trabajo tiene a lo sumo un archivo de salida.
 
 **Respuesta** (con payload):
 
 ```json
-{"type": "ok", "job_id": "a3f7b2c1-…", "artifact": "out.jpg",
+{"type": "ok", "job_id": "a3f7b2c1-…", "filename": "foto_anonymized.jpg",
  "content_type": "image/jpeg", "payload_size": 284915}
 ```
 
-seguida de los 284.915 bytes del archivo.
+seguida de los 284.915 bytes del archivo. El campo `filename` es un nombre sugerido; el
+cliente puede guardarlo donde indique `-o`.
 
 Es el pedido inverso al `submit`: sin payload de ida, con payload de vuelta.
 
@@ -374,7 +381,7 @@ Ante cualquier problema el servidor responde con un mensaje de tipo `error`:
 | `JOB_NOT_FOUND` | no existe un trabajo con ese `job_id` |
 | `FORBIDDEN` | el trabajo pertenece a otro usuario |
 | `NOT_READY` | se pidió descargar un trabajo que aún no terminó |
-| `ARTIFACT_NOT_FOUND` | el trabajo no produjo un artefacto con ese nombre |
+| `NO_OUTPUT` | se pidió descargar un trabajo que no genera archivo (`inspect`) |
 | `INTERNAL` | error inesperado del servidor |
 
 **Un error nunca cierra la conexión**: es una respuesta como cualquier otra, y el cliente
@@ -405,10 +412,10 @@ Cliente                                             Servidor
    │◄── [{"status":"PROCESSING"}] ─────────────────────│
    │   await asyncio.sleep(1)                          │
    │──► [status a3f7…] ───────────────────────────────►│
-   │◄── [{"status":"DONE",                             │
-   │      "artifacts":[{"name":"out.jpg",…}]}] ────────│
+   │◄── [{"status":"DONE","has_output":true,           │
+   │      "result":{"faces_detected":3,…}}] ───────────│
    │                                                   │
-   │──► [download a3f7… / out.jpg] ───────────────────►│  abre results/a3f7…/out.jpg
+   │──► [download a3f7…] ─────────────────────────────►│  abre results/a3f7…/out.jpg
    │◄── [4B: 96] [header] [284.915 B de JPEG] ─────────│  lo envía en bloques
    │                                                   │
    │   escribe el archivo local                        │
@@ -447,6 +454,6 @@ cliente cierra su socket y libera los recursos. No afecta a las demás conexione
 ni le importa si quien lo pidió continúa conectado, y el resultado queda disponible para
 cuando el cliente vuelva a consultarlo con su `job_id`.
 
-**Trabajo terminado, cliente que nunca vuelve**: los artefactos quedan en el volumen. La
+**Trabajo terminado, cliente que nunca vuelve**: los resultados quedan en el volumen. La
 limpieza periódica de resultados viejos está prevista como tarea programada de Celery
 Beat y documentada en `TODO.md`.

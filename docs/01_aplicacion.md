@@ -75,11 +75,12 @@ Notas de diseño:
   (UUID v4)** que genera el servidor al aceptarlo y devuelve al cliente. Contiene además
   usuario, operación, parámetros, imagen de entrada, estado, timestamps y resultado o
   error. **Pertenece al usuario que lo creó**: solo él puede consultarlo y descargarlo.
-- **Artefacto**: cada archivo producido por un trabajo — la imagen procesada, o un
-  informe JSON en el caso de `inspect`. Se identifica por un **nombre dentro de su
-  trabajo**, de modo que el par **`(job_id, artifact)`** direcciona de forma única
-  cualquier archivo del sistema. Un trabajo puede producir más de uno; la consulta de
-  estado devuelve la lista disponible.
+- **Resultado**: lo que produce un trabajo. Tiene dos partes: **a lo sumo un archivo de
+  salida** (la imagen procesada), identificado por el propio `job_id` y descargable con
+  `download`; y los **datos** de la operación (cuántas caras se detectaron, qué
+  metadatos se eliminaron, el informe de `inspect`), que son unos pocos cientos de bytes
+  y llegan en la respuesta de `status`, sin necesidad de descargar nada. `inspect` es el
+  caso en que solo hay datos y ningún archivo.
 - **Evento de auditoría**: registro de cada transición, persistido por el auditor.
 
 ## 6. Ciclo de vida de un trabajo
