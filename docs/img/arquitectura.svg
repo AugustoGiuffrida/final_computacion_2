@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 810" width="900" height="810"
+     font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+
+  <defs>
+    <marker id="aTcp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1d4ed8"/>
+    </marker>
+    <marker id="aIpc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c2410c"/>
+    </marker>
+    <marker id="aQueue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6d28d9"/>
+    </marker>
+    <marker id="aFs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="810" fill="#ffffff"/>
+
+  <!-- ─────────── Título ─────────── -->
+  <text x="450" y="32" text-anchor="middle" font-size="17" font-weight="700" fill="#0f172a">
+    Arquitectura del sistema
+  </text>
+  <text x="450" y="52" text-anchor="middle" font-size="11.5" fill="#64748b">
+    Servicio de anonimización y sanitización de imágenes
+  </text>
+
+  <!-- ─────────── Clientes ─────────── -->
+  <g>
+    <rect x="82" y="76" width="120" height="52" rx="7" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.5"/>
+    <text x="142" y="99" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1e3a8a">Cliente 1</text>
+    <text x="142" y="115" text-anchor="middle" font-size="10.5" fill="#3b82f6">CLI · argparse</text>
+
+    <rect x="220" y="76" width="120" height="52" rx="7" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.5"/>
+    <text x="280" y="99" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1e3a8a">Cliente 2</text>
+    <text x="280" y="115" text-anchor="middle" font-size="10.5" fill="#3b82f6">CLI · argparse</text>
+
+    <rect x="358" y="76" width="120" height="52" rx="7" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.5"/>
+    <text x="418" y="99" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1e3a8a">Cliente N</text>
+    <text x="418" y="115" text-anchor="middle" font-size="10.5" fill="#3b82f6">CLI · argparse</text>
+  </g>
+
+  <!-- Clientes → Servidor -->
+  <line x1="280" y1="128" x2="280" y2="168" stroke="#1d4ed8" stroke-width="2" marker-end="url(#aTcp)"/>
+  <text x="296" y="146" font-size="11" font-weight="600" fill="#1d4ed8">socket TCP · puerto 9000</text>
+  <text x="296" y="160" font-size="10.5" fill="#64748b">protocolo propio: header JSON + payload binario</text>
+
+  <!-- ─────────── Servidor ─────────── -->
+  <rect x="60" y="172" width="800" height="186" rx="10" fill="#f8fafc" stroke="#334155"
+        stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="76" y="192" font-size="11.5" font-weight="700" fill="#334155" letter-spacing="1">SERVIDOR</text>
+
+  <!-- Proceso principal -->
+  <rect x="115" y="206" width="330" height="132" rx="8" fill="#ecfdf5" stroke="#047857" stroke-width="1.5"/>
+  <text x="132" y="227" font-size="12.5" font-weight="700" fill="#065f46">Proceso principal · asyncio</text>
+  <text x="132" y="249" font-size="10.5" fill="#047857">• acepta N clientes concurrentes (1 corrutina c/u)</text>
+  <text x="132" y="267" font-size="10.5" fill="#047857">• valida y guarda las imágenes recibidas</text>
+  <text x="132" y="285" font-size="10.5" fill="#047857">• encola tareas y consulta estados</text>
+  <text x="132" y="303" font-size="10.5" fill="#047857">• responde status, download e history</text>
+  <text x="132" y="325" font-size="10" font-style="italic" fill="#059669">nunca procesa imágenes: no bloquea el event loop</text>
+
+  <!-- Auditor -->
+  <rect x="590" y="224" width="250" height="96" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
+  <text x="607" y="245" font-size="12.5" font-weight="700" fill="#9a3412">Auditor · proceso hijo</text>
+  <text x="607" y="267" font-size="10.5" fill="#c2410c">• único escritor de SQLite</text>
+  <text x="607" y="285" font-size="10.5" fill="#c2410c">• historial y estadísticas</text>
+  <text x="607" y="307" font-size="10" font-style="italic" fill="#ea580c">saca el disco del event loop</text>
+
+  <!-- IPC -->
+  <text x="517" y="258" text-anchor="middle" font-size="10.5" font-weight="600" fill="#c2410c">IPC</text>
+  <line x1="445" y1="272" x2="590" y2="272" stroke="#c2410c" stroke-width="2"
+        stroke-dasharray="6 3" marker-end="url(#aIpc)"/>
+  <text x="517" y="290" text-anchor="middle" font-size="10" fill="#9a3412">mp.Queue</text>
+
+  <!-- Servidor → Redis -->
+  <line x1="280" y1="338" x2="280" y2="408" stroke="#6d28d9" stroke-width="2" marker-end="url(#aQueue)"/>
+  <text x="296" y="368" font-size="10.5" font-weight="600" fill="#6d28d9">encolar tarea (Celery)</text>
+  <text x="296" y="382" font-size="10" fill="#64748b">viajan rutas y parámetros, no imágenes</text>
+
+  <!-- Auditor → SQLite -->
+  <line x1="715" y1="320" x2="715" y2="408" stroke="#475569" stroke-width="2" marker-end="url(#aFs)"/>
+
+  <!-- Redis -->
+  <rect x="180" y="412" width="200" height="66" rx="8" fill="#f5f3ff" stroke="#6d28d9" stroke-width="1.5"/>
+  <text x="280" y="435" text-anchor="middle" font-size="12.5" font-weight="700" fill="#5b21b6">Redis</text>
+  <text x="280" y="452" text-anchor="middle" font-size="10.5" fill="#6d28d9">broker (cola de tareas)</text>
+  <text x="280" y="468" text-anchor="middle" font-size="10.5" fill="#6d28d9">+ result backend (estados)</text>
+
+  <!-- SQLite -->
+  <rect x="635" y="412" width="160" height="66" rx="8" fill="#f9fafb" stroke="#475569" stroke-width="1.5"/>
+  <text x="715" y="437" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e293b">SQLite</text>
+  <text x="715" y="455" text-anchor="middle" font-size="10.5" fill="#475569">jobs.db</text>
+  <text x="715" y="470" text-anchor="middle" font-size="10" fill="#64748b">historial permanente</text>
+
+  <!-- Redis → Workers -->
+  <line x1="280" y1="478" x2="280" y2="530" stroke="#6d28d9" stroke-width="2" marker-end="url(#aQueue)"/>
+  <text x="296" y="504" font-size="10.5" font-weight="600" fill="#6d28d9">consumir tareas (modelo pull)</text>
+
+  <!-- ─────────── Workers ─────────── -->
+  <g>
+    <rect x="69" y="534" width="130" height="80" rx="8" fill="#f0fdf4" stroke="#15803d" stroke-width="1.5"/>
+    <text x="134" y="557" text-anchor="middle" font-size="12.5" font-weight="700" fill="#14532d">Worker 1</text>
+    <text x="134" y="575" text-anchor="middle" font-size="10.5" fill="#15803d">Celery</text>
+    <text x="134" y="591" text-anchor="middle" font-size="10.5" fill="#15803d">Pillow · OpenCV</text>
+    <text x="134" y="607" text-anchor="middle" font-size="9.5" font-style="italic" fill="#16a34a">proceso propio</text>
+
+    <rect x="215" y="534" width="130" height="80" rx="8" fill="#f0fdf4" stroke="#15803d" stroke-width="1.5"/>
+    <text x="280" y="557" text-anchor="middle" font-size="12.5" font-weight="700" fill="#14532d">Worker 2</text>
+    <text x="280" y="575" text-anchor="middle" font-size="10.5" fill="#15803d">Celery</text>
+    <text x="280" y="591" text-anchor="middle" font-size="10.5" fill="#15803d">Pillow · OpenCV</text>
+    <text x="280" y="607" text-anchor="middle" font-size="9.5" font-style="italic" fill="#16a34a">proceso propio</text>
+
+    <rect x="361" y="534" width="130" height="80" rx="8" fill="#f0fdf4" stroke="#15803d" stroke-width="1.5"/>
+    <text x="426" y="557" text-anchor="middle" font-size="12.5" font-weight="700" fill="#14532d">Worker N</text>
+    <text x="426" y="575" text-anchor="middle" font-size="10.5" fill="#15803d">Celery</text>
+    <text x="426" y="591" text-anchor="middle" font-size="10.5" fill="#15803d">Pillow · OpenCV</text>
+    <text x="426" y="607" text-anchor="middle" font-size="9.5" font-style="italic" fill="#16a34a">proceso propio</text>
+  </g>
+  <text x="508" y="508" font-size="10.5" font-weight="600" fill="#15803d">paralelismo real · procesos independientes</text>
+  <text x="508" y="524" font-size="10" fill="#64748b">docker compose up --scale worker=N</text>
+
+  <!-- Workers → Volumen -->
+  <line x1="134" y1="614" x2="134" y2="690" stroke="#475569" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#aFs)"/>
+  <line x1="280" y1="614" x2="280" y2="690" stroke="#475569" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#aFs)"/>
+  <line x1="426" y1="614" x2="426" y2="690" stroke="#475569" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#aFs)"/>
+  <text x="296" y="655" font-size="10" fill="#64748b">leen el original, escriben el resultado</text>
+
+  <!-- Servidor → Volumen (por el margen izquierdo) -->
+  <path d="M 115 262 L 34 262 L 34 730 L 66 730" fill="none" stroke="#475569" stroke-width="1.8"
+        stroke-dasharray="5 4" marker-end="url(#aFs)"/>
+  <text x="44" y="500" font-size="10" fill="#64748b" transform="rotate(-90 44 500)" text-anchor="middle">
+    guarda originales · lee resultados
+  </text>
+
+  <!-- Volumen compartido -->
+  <rect x="70" y="694" width="420" height="86" rx="8" fill="#f9fafb" stroke="#475569" stroke-width="1.5"/>
+  <text x="280" y="718" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e293b">Volumen compartido</text>
+  <text x="280" y="737" text-anchor="middle" font-size="10.5" fill="#475569">storage/uploads/&lt;job_id&gt;/ — imágenes originales</text>
+  <text x="280" y="754" text-anchor="middle" font-size="10.5" fill="#475569">storage/results/&lt;job_id&gt;/ — imágenes procesadas</text>
+  <text x="280" y="769" text-anchor="middle" font-size="9.5" font-style="italic" fill="#64748b">montado en el servidor y en todos los workers</text>
+
+  <!-- ─────────── Referencias ─────────── -->
+  <rect x="560" y="545" width="312" height="215" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="576" y="568" font-size="11.5" font-weight="700" fill="#0f172a">Canales de comunicación</text>
+
+  <line x1="578" y1="592" x2="612" y2="592" stroke="#1d4ed8" stroke-width="2.5"/>
+  <text x="622" y="589" font-size="10.5" font-weight="600" fill="#1e293b">Socket TCP</text>
+  <text x="622" y="603" font-size="10" fill="#64748b">cliente ↔ servidor · entre máquinas</text>
+
+  <line x1="578" y1="632" x2="612" y2="632" stroke="#c2410c" stroke-width="2.5" stroke-dasharray="6 3"/>
+  <text x="622" y="629" font-size="10.5" font-weight="600" fill="#1e293b">IPC — multiprocessing.Queue</text>
+  <text x="622" y="643" font-size="10" fill="#64748b">servidor ↔ auditor · misma máquina</text>
+
+  <line x1="578" y1="672" x2="612" y2="672" stroke="#6d28d9" stroke-width="2.5"/>
+  <text x="622" y="669" font-size="10.5" font-weight="600" fill="#1e293b">Cola de tareas — Redis</text>
+  <text x="622" y="683" font-size="10" fill="#64748b">servidor ↔ workers · procesos sin relación</text>
+
+  <line x1="578" y1="712" x2="612" y2="712" stroke="#475569" stroke-width="2.5" stroke-dasharray="5 4"/>
+  <text x="622" y="709" font-size="10.5" font-weight="600" fill="#1e293b">Sistema de archivos compartido</text>
+  <text x="622" y="723" font-size="10" fill="#64748b">lo que pesa: las imágenes</text>
+
+  <text x="576" y="748" font-size="9.5" font-style="italic" fill="#94a3b8">Cada tramo usa el mecanismo que corresponde a su alcance.</text>
+</svg>

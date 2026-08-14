@@ -23,47 +23,7 @@ De esa separación se derivan todas las decisiones que siguen.
 
 ## 2. Diagrama
 
-```
- ┌────────────┐
- │ Cliente 1  │◄──────┐
- │ (CLI)      │       │ socket TCP → IP:9000 (protocolo propio:
- └────────────┘       │  header JSON + payload binario)
- ┌────────────┐       │
- │ Cliente N  │◄──────┤
- └────────────┘       ▼
-          ┌───────────────────────────────────────────────────────┐
-          │ SERVIDOR                                              │
-          │  ┌─────────────────────────────┐   IPC                │
-          │  │ Proceso principal (asyncio) │  mp.Queue  ┌───────┐ │
-          │  │ - acepta N clientes         │───────────►│Auditor│ │
-          │  │ - valida y guarda imágenes  │            │(proc. │ │
-          │  │ - encola tareas en Celery   │            │ hijo) │ │
-          │  │ - responde status/download  │            └───┬───┘ │
-          │  └──────────────┬──────────────┘                │     │
-          └─────────────────┼───────────────────────────────┼─────┘
-                            │ encolar tarea                 ▼
-                            ▼                         ┌──────────┐
-                      ┌───────────┐                   │  SQLite  │
-                      │   Redis   │                   │ jobs.db  │
-                      │ broker +  │                   └──────────┘
-                      │ backend   │
-                      └─────┬─────┘
-                            │ consumir tareas
-             ┌──────────────┼──────────────┐
-             ▼              ▼              ▼
-       ┌──────────┐   ┌──────────┐   ┌──────────┐
-       │ Worker 1 │   │ Worker 2 │   │ Worker N │   ← contenedores escalables
-       │ (Celery, │   │          │   │          │     (--scale worker=N)
-       │  Pillow, │   │          │   │          │
-       │  OpenCV) │   │          │   │          │
-       └────┬─────┘   └────┬─────┘   └────┬─────┘
-            └──────────────┼──────────────┘
-                           ▼
-                ┌─────────────────────┐
-                │ Volumen compartido  │  storage/uploads/   (originales)
-                │                     │  storage/results/   (procesadas)
-                └─────────────────────┘
-```
+![Arquitectura del sistema](img/arquitectura.svg)
 
 **Cómo leerlo**: el cliente habla con el servidor por un socket TCP. El servidor guarda
 la imagen en el volumen compartido, deja la tarea en Redis y le avisa al auditor. Un
@@ -192,10 +152,11 @@ construido sobre TCP — el mismo lugar que ocupa HTTP.
 La especificación completa está en [04_protocolo.md](04_protocolo.md). Lo esencial:
 
 **Identidad.** Cada `submit` genera un **`job_id`** (UUID v4) que el cliente conserva
-para consultar y descargar. Cada archivo producido es un **artefacto** con nombre propio
-dentro del trabajo, de modo que el par `(job_id, artifact)` direcciona cualquier archivo
-del sistema. `status` devuelve la lista de artefactos disponibles, así que el cliente
-nunca adivina qué puede descargar.
+para consultar y descargar. Cada trabajo produce **a lo sumo un archivo de salida**, así
+que el `job_id` alcanza para direccionarlo. Los datos que devuelve la operación —caras
+detectadas, metadatos eliminados, el informe de `inspect`— viajan en la respuesta de
+`status`, sin necesidad de descargar nada. Un trabajo pertenece al usuario que lo creó y
+solo él puede consultarlo.
 
 **Formato.** Todos los mensajes usan *length-prefixed framing*: 4 bytes con la longitud
 del header, header JSON con los datos del pedido, y payload binario opcional cuyo tamaño
