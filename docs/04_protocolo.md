@@ -7,14 +7,13 @@ trabajos y sus archivos, qué formato tienen los mensajes y cómo se intercambia
 
 ## 1. Posición en el modelo de capas
 
-El protocolo que definimos es un **protocolo de capa de aplicación**, construido sobre
-TCP. Ocupa el mismo lugar que HTTP, FTP o SMTP: todos ellos son protocolos de
-aplicación que usan TCP como transporte.
+El protocolo que definimos es un **protocolo propio de capa de aplicación**, construido
+sobre TCP: define el significado de lo que se transmite, mientras TCP se encarga de
+transportarlo.
 
 ```
 ┌───────────────────────────────────────────────┐
 │ Aplicación   │  NUESTRO PROTOCOLO             │  ← lo que definimos nosotros
-│              │  (equivalente a HTTP, FTP…)    │
 ├───────────────────────────────────────────────┤
 │ Transporte   │  TCP                           │  ← lo provee el sistema operativo
 ├───────────────────────────────────────────────┤
@@ -33,47 +32,11 @@ Es decir: TCP resuelve el transporte, nosotros resolvemos el significado.
 
 ---
 
-## 2. Protocolo propio, no HTTP
-
-**Decisión: se implementa un protocolo propio sobre TCP.**
-
-### Comparación
-
-| | Protocolo propio | HTTP |
-|---|---|---|
-| Transporte | TCP | TCP |
-| Envío de imágenes | binario crudo | `multipart/form-data` o base64 (+33% de tamaño) |
-| Mensajes definidos | 4 tipos, exactamente los que se usan | método + URL + cabeceras + códigos de estado |
-| Interoperabilidad | solo nuestro cliente | cualquier navegador o herramienta |
-| Trabajo de implementación | hay que escribir el framing | resuelto por la biblioteca |
-| Visibilidad de la capa de sockets | explícita | oculta |
-
-### Justificación
-
-**El objetivo de la materia es la capa de sockets.** Un framework HTTP la ocultaría por
-completo, y con ella el manejo de conexiones concurrentes, el framing y el control del
-flujo de bytes — que es justamente lo que el trabajo debe demostrar.
-
-**El conjunto de operaciones es cerrado y chico.** Son cuatro pedidos: enviar, consultar,
-descargar, listar. HTTP aporta un modelo general (métodos, rutas, cabeceras,
-negociación de contenido, códigos de estado) que acá quedaría casi todo sin usar.
-
-**La transferencia binaria es más directa.** La imagen viaja tal cual, sin
-transformaciones. Por HTTP habría que envolverla en `multipart/form-data` o codificarla
-en base64, que la agranda un tercio sin ningún beneficio.
-
-**Costo asumido**: se pierde interoperabilidad — un navegador no puede hablar con
-nuestro servidor. Como el cliente es parte del proyecto, no nos afecta. Si en el futuro
-se quisiera una interfaz web, la vía natural sería agregar un adaptador HTTP delante,
-sin tocar el núcleo.
-
----
-
-## 3. Modelo de identidad
+## 2. Modelo de identidad
 
 Esta sección responde: **cómo se identifica una imagen y cómo un cliente la descarga.**
 
-### 3.1 El identificador de trabajo (`job_id`)
+### 2.1 El identificador de trabajo (`job_id`)
 
 Cuando el servidor acepta un `submit`, genera un **`job_id`: un UUID versión 4**
 (aleatorio de 122 bits, por ejemplo `a3f7b2c1-9e4d-4b8a-b3c7-1f2e5d8a9c40`). Lo devuelve
@@ -106,7 +69,7 @@ coordinación con nadie, y sigue siendo único aunque mañana haya varios servid
 coherente con el resto del diseño, donde ningún componente necesita un coordinador
 central.
 
-### 3.2 Un trabajo, un archivo
+### 2.2 Un trabajo, un archivo
 
 **Cada trabajo produce a lo sumo un archivo de salida**, y el `job_id` alcanza para
 identificarlo. No hace falta un segundo nivel de direccionamiento.
@@ -132,7 +95,7 @@ tres tamaños—, bastaría con agregar un campo `artifact` opcional al `downloa
 header es JSON, ese agregado no rompería ningún cliente existente. No se incluye ahora
 porque ninguna operación de la v1 lo necesita.
 
-### 3.3 Propiedad: quién puede descargar qué
+### 2.3 Propiedad: quién puede descargar qué
 
 Cada trabajo queda asociado al **usuario que lo creó**, dato que el auditor persiste en
 la tabla `jobs`. El servidor aplica una regla simple en `status`, `download` e
@@ -153,20 +116,22 @@ está fuera del alcance de esta versión y documentado en `TODO.md`.
 
 ---
 
-## 4. Formato de los mensajes
+## 3. Formato de los mensajes
 
-### 4.1 El problema a resolver
+### 3.1 El problema a resolver
 
 TCP entrega un **flujo continuo de datos, sin marcas de separación**: lo que el emisor
 envía en tres operaciones puede llegar en una sola lectura, o al revés. Si el cliente
 manda un pedido seguido de una imagen, el servidor recibe todo pegado y no tiene forma
 natural de saber dónde termina uno y empieza la otra, ni cuándo dejar de leer.
 
-Todo protocolo sobre TCP tiene que resolver esto de alguna manera. HTTP lo hace con
-líneas de texto y la cabecera `Content-Length`. Nosotros usamos **prefijo de longitud**
-(*length-prefixed framing*), que es más simple y más directo para datos binarios.
+Todo protocolo sobre TCP tiene que resolver esto de alguna manera. Nosotros usamos
+**prefijo de longitud** (*length-prefixed framing*): cada mensaje anuncia su tamaño
+antes de su contenido. Es la opción más directa para datos binarios, porque no obliga a
+reservar ningún byte como separador — una imagen puede contener cualquier valor,
+incluido el que se eligiera como marca.
 
-### 4.2 Estructura del frame
+### 3.2 Estructura del frame
 
 Todos los mensajes, en ambas direcciones, tienen la misma estructura:
 
@@ -196,7 +161,7 @@ sin romper compatibilidad, y Python lo serializa en una línea. El payload va cr
 porque es lo más eficiente posible: cualquier codificación textual lo agrandaría sin
 beneficio alguno. Cada parte usa el formato que le conviene.
 
-### 4.3 Ejemplo de mensaje completo, byte a byte
+### 3.3 Ejemplo de mensaje completo, byte a byte
 
 Un `submit` con una imagen de 3.145.728 bytes:
 
@@ -213,7 +178,7 @@ bytes 146-…    FF D8 FF E0 00 10 4A 46 …         ← 3.145.728 bytes de JPEG
 Total transmitido: 4 + 142 + 3.145.728 bytes. El receptor sabe exactamente dónde termina
 cada parte antes de empezar a leerla.
 
-### 4.4 Algoritmo de lectura
+### 3.4 Algoritmo de lectura
 
 Es el mismo en los dos extremos, y es la clave de todo el protocolo:
 
@@ -249,9 +214,9 @@ cada bloque le da al event loop oportunidades frecuentes de atender a otros clie
 
 ---
 
-## 5. Catálogo de mensajes
+## 4. Catálogo de mensajes
 
-### 5.1 `submit` — enviar una imagen a procesar
+### 4.1 `submit` — enviar una imagen a procesar
 
 **Pedido** (con payload):
 
@@ -272,7 +237,7 @@ El servidor valida, guarda la imagen, encola la tarea y responde **de inmediato*
 espera al resultado. Esa respuesta rápida es lo que le permite seguir atendiendo a los
 demás clientes.
 
-### 5.2 `status` — consultar el estado de un trabajo
+### 4.2 `status` — consultar el estado de un trabajo
 
 **Pedido**:
 
@@ -315,7 +280,7 @@ Estados posibles: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`. Los campos `has_outpu
 `result` aparecen solo cuando el estado es `DONE`: el primero le dice al cliente si tiene
 sentido pedir la descarga, el segundo trae los datos que produjo la operación.
 
-### 5.3 `download` — descargar el resultado
+### 4.3 `download` — descargar el resultado
 
 **Pedido**:
 
@@ -337,7 +302,7 @@ cliente puede guardarlo donde indique `-o`.
 
 Es el pedido inverso al `submit`: sin payload de ida, con payload de vuelta.
 
-### 5.4 `history` — listar los trabajos del usuario
+### 4.4 `history` — listar los trabajos del usuario
 
 **Pedido**:
 
@@ -373,9 +338,9 @@ trabajos, ordenados del más reciente al más antiguo.
 
 ---
 
-## 6. Cómo funciona cada operación, paso a paso
+## 5. Cómo funciona cada operación, paso a paso
 
-### 6.1 De dónde saca el servidor la información de un trabajo
+### 5.1 De dónde saca el servidor la información de un trabajo
 
 Las tres consultas (`status`, `download`, `history`) empiezan por lo mismo: resolver el
 `job_id`. El servidor tiene **tres fuentes**, y cada una cumple un papel distinto.
@@ -424,7 +389,7 @@ De ahí la división: Redis es el estado *vivo* y efímero; SQLite es la verdad 
 y tanto su estado como la ruta del archivo salen del índice en memoria o de SQLite. El
 servidor resuelve la descarga por completo con esas dos fuentes más el volumen compartido.
 
-### 6.2 Envío de una imagen (`submit`)
+### 5.2 Envío de una imagen (`submit`)
 
 **En el cliente:**
 
@@ -437,7 +402,7 @@ servidor resuelve la descarga por completo con esas dos fuentes más el volumen 
 
 **En el servidor:**
 
-4. Lee el prefijo y el header (algoritmo de la sección 4.4) y valida los campos.
+4. Lee el prefijo y el header (algoritmo de la sección 3.4) y valida los campos.
 5. Genera el `job_id` (UUID v4) y crea el directorio `storage/uploads/<job_id>/`.
 6. Lee el payload **en bloques de 64 KB y los escribe directamente en el archivo**,
    sin acumular la imagen en memoria. Si la conexión se corta antes de completar
@@ -453,7 +418,7 @@ servidor resuelve la descarga por completo con esas dos fuentes más el volumen 
 Los pasos 4 a 10 llevan milisegundos: el servidor **nunca espera** a que la imagen se
 procese.
 
-### 6.3 Consulta de estado (`status`)
+### 5.3 Consulta de estado (`status`)
 
 #### De dónde sale el estado
 
@@ -488,7 +453,7 @@ funciona como uno esperaría:
 
 1. El cliente envía `status` con su `job_id`, **por la misma conexión ya abierta**: no
    se reconecta en cada consulta.
-2. El servidor resuelve el `job_id` según la sección 6.1 (índice en memoria → SQLite) y
+2. El servidor resuelve el `job_id` según la sección 5.1 (índice en memoria → SQLite) y
    verifica que **pertenezca al usuario** que pregunta; si no, responde `JOB_NOT_FOUND`
    o `FORBIDDEN`.
 3. Consulta el estado en el result backend y lo traduce según la tabla.
@@ -527,11 +492,11 @@ Celery marca la tarea como `SUCCESS` recién cuando la función del worker **ret
 función escribe el archivo antes de retornar. Por eso no existe la ventana en que el
 cliente vea `DONE`, pida la descarga y el archivo todavía no exista.
 
-### 6.4 Descarga del resultado (`download`)
+### 5.4 Descarga del resultado (`download`)
 
 **En el servidor, al recibir el pedido:**
 
-1. Resuelve el `job_id` según la sección 6.1 —índice en memoria, y si no está ahí,
+1. Resuelve el `job_id` según la sección 5.1 —índice en memoria, y si no está ahí,
    SQLite— y verifica que **pertenezca al usuario**; si no, `JOB_NOT_FOUND` o
    `FORBIDDEN`. **Redis no interviene** en ningún paso de la descarga.
 2. Verifica que el estado sea `DONE`. Si sigue en curso responde `NOT_READY`; si falló,
@@ -586,7 +551,7 @@ cualquier truncamiento.
 - **Dos clientes descargan el mismo trabajo a la vez**: no hay problema, son lecturas
   independientes y cada corrutina abre el archivo por su cuenta.
 
-## 7. Errores
+## 6. Errores
 
 Ante cualquier problema el servidor responde con un mensaje de tipo `error`:
 
@@ -613,7 +578,7 @@ distinguir entre un pedido rechazado y una caída del servidor.
 
 ---
 
-## 8. Traza completa de una sesión
+## 7. Traza completa de una sesión
 
 `submit --wait`, que ejercita el protocolo entero sobre una única conexión:
 
@@ -650,7 +615,7 @@ Mientras esta conversación transcurre, el servidor atiende a los demás cliente
 
 ---
 
-## 9. Reglas del diálogo, límites y casos borde
+## 8. Reglas del diálogo, límites y casos borde
 
 **Un pedido por vez.** El cliente envía un pedido y espera la respuesta completa antes de
 enviar el siguiente. Como consecuencia, **no hacen falta identificadores de correlación**

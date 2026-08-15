@@ -70,7 +70,7 @@ Notas de diseño:
 
 - **Usuario**: identificado por nombre pasado por CLI (`--user`). Sin contraseñas en v1;
   el nombre se declara, no se autentica (ver limitación en
-  [04_protocolo.md](04_protocolo.md), sección 3.3).
+  [04_protocolo.md](04_protocolo.md), sección 2.3).
 - **Trabajo (job)**: una solicitud de procesamiento. Se identifica con un **`job_id`
   (UUID v4)** que genera el servidor al aceptarlo y devuelve al cliente. Contiene además
   usuario, operación, parámetros, imagen de entrada, estado, timestamps y resultado o

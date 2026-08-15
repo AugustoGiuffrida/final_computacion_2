@@ -156,8 +156,8 @@ a Redis, historia a la base de datos.
 ## 5. Protocolo cliente-servidor (resumen)
 
 Los sockets garantizan que la información llegue íntegra, pero no definen **qué** enviar
-ni **cómo interpretarlo**. Eso lo define un **protocolo propio de capa de aplicación**,
-construido sobre TCP — el mismo lugar que ocupa HTTP.
+ni **cómo interpretarlo**. Eso lo define un **protocolo propio de capa de
+aplicación**, construido sobre TCP.
 
 La especificación completa está en [04_protocolo.md](04_protocolo.md). Lo esencial:
 
@@ -176,12 +176,6 @@ que separen un mensaje del siguiente.
 **Diálogo.** Pedido → respuesta, siempre iniciado por el cliente, uno por vez. Una
 conexión por ejecución del cliente, que puede transportar varios pedidos. Cuatro tipos:
 `submit`, `status`, `download`, `history`.
-
-**Por qué protocolo propio y no HTTP**: HTTP corre sobre sockets, así que usarlo no
-eliminaría esa capa sino que la ocultaría — y es justamente la capa que el trabajo debe
-demostrar. Además el conjunto de operaciones es chico y cerrado, y la transferencia
-binaria directa evita el 33% de sobrecarga que impondría base64.
-
 
 ## 6. Mensajes hacia los workers
 
