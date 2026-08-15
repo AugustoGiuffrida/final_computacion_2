@@ -1,0 +1,6 @@
+# Dependencias de ejecución.
+#
+# El cliente y el proceso principal del servidor funcionan solo con la biblioteca
+# estándar: argparse y asyncio vienen con Python. Las dependencias externas
+# (Pillow, OpenCV, Celery, Redis) se agregan cuando se implementen los componentes
+# que las necesitan.
