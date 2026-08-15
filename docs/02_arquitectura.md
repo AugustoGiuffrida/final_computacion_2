@@ -82,7 +82,8 @@ apenas está listo.
 ### 4.2 Servidor — proceso principal
 
 Es el único punto de contacto de los clientes y **la pieza que nunca debe bloquearse**.
-Atiende N conexiones concurrentes sobre un solo hilo con asyncio.
+Atiende N conexiones concurrentes sobre un solo hilo con asyncio, escuchando en un
+**socket dual-stack** que acepta clientes IPv4 e IPv6 sobre el mismo puerto.
 
 Sus responsabilidades:
 
@@ -339,7 +340,7 @@ pueda desplegarse por separado, que es la condición de un sistema distribuido.
 
 | Requisito obligatorio | Dónde se cumple |
 |---|---|
-| Sockets, clientes múltiples concurrentes | `server.py` — `asyncio.start_server` sobre TCP |
+| Sockets, clientes múltiples concurrentes | `server.py` — `asyncio.start_server` sobre TCP, dual-stack IPv4/IPv6 |
 | Mecanismos de IPC | `mp.Queue` entre servidor y `auditor.py` |
 | Asincronismo de I/O | asyncio en el servidor y en el cliente (streams en ambos) |
 | Cola de tareas distribuidas | Celery + Redis, tareas en `tasks.py` |

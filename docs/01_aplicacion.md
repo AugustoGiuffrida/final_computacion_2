@@ -6,7 +6,7 @@
 
 Cada foto que se publica en internet filtra más información de la que se ve:
 
-- **Caras de terceros** que no dieron consentimiento para aparecer publicados.
+- **Caras de terceros** que no dieron su consentimiento para aparecer.
 - **Metadatos invisibles**: coordenadas GPS del lugar donde se tomó (tu casa,
   tu trabajo), fecha y hora exactas, modelo y número de serie de la cámara.
 - Además, las fotos originales **pesan** mucho más de lo necesario para la web.
@@ -29,30 +29,35 @@ Construir una aplicación cliente-servidor en Python donde:
   resultados y revisa su historial.
 - El **servidor** (asyncio) atiende N clientes concurrentes y delega el procesamiento
   en **workers Celery** a través de un broker **Redis**.
-- Un **proceso auditor** (IPC con el servidor) persiste historial y estadísticas en **SQLite**.
+- Un **proceso auditor** (IPC con el servidor) persiste el historial en **SQLite**.
 - Todo el stack se despliega con **Docker Compose**.
 
 ## 3. Operaciones soportadas (v1)
 
-Todas reciben una imagen (JPEG/PNG) y devuelven un archivo resultado, salvo `inspect`
-que devuelve solo un informe JSON.
+Todas reciben una imagen JPEG o PNG. Cada operación produce **a lo sumo un archivo de
+salida** —descargable con el `job_id`— y un conjunto de **datos**, que son unos pocos
+cientos de bytes y llegan en la respuesta de `status`, sin necesidad de descargar nada.
 
-| Operación   | Parámetros                                   | Salida                                                        |
-|-------------|----------------------------------------------|---------------------------------------------------------------|
-| `inspect`   | —                                            | **Auditoría de privacidad** (JSON): caras detectadas, GPS presente (y dónde apunta), fecha, cámara/serie, peso. No modifica la imagen. |
-| `anonymize` | `mode` (`blur`/`pixelate`/`box`), `strength` | Imagen con las caras cubiertas + cantidad de caras detectadas |
-| `clean`     | —                                            | Imagen sin metadatos EXIF + informe de qué se eliminó         |
-| `convert`   | `format` (`webp`/`jpeg`/`png`), `quality`    | Imagen en el nuevo formato                                    |
-| `compress`  | `quality` (1-95), `max_size` (lado máximo)   | Imagen recomprimida y/o reescalada, más liviana               |
-| `sanitize`  | combina los anteriores                       | **Pipeline completo**: anonymize → clean → compress/convert en una sola solicitud |
+| Operación   | Parámetros                                   | Archivo de salida        | Datos que devuelve |
+|-------------|----------------------------------------------|--------------------------|--------------------|
+| `inspect`   | —                                            | **ninguno**              | Auditoría de privacidad completa: caras detectadas, GPS presente (y dónde apunta), fecha, cámara y número de serie, peso |
+| `anonymize` | `mode` (`blur`/`pixelate`/`box`), `strength` | imagen con caras cubiertas | cuántas caras detectó |
+| `clean`     | —                                            | imagen sin metadatos     | qué metadatos eliminó |
+| `convert`   | `format` (`webp`/`jpeg`/`png`), `quality`    | imagen en el nuevo formato | formato origen y destino, tamaño final |
+| `compress`  | `quality` (1-95), `max_size` (lado máximo)   | imagen recomprimida      | tamaño original y final |
+| `sanitize`  | `mode`, `strength`, `quality`, `max_size`    | imagen saneada           | resumen de las tres etapas |
 
 Notas de diseño:
 
-- **`sanitize` es la operación estrella**: representa el caso de uso real y se
-  implementa con **composición de tareas Celery (`chain`)** — cada etapa recibe la
-  salida de la anterior. Es el argumento de composición de tareas en la defensa.
+- **`sanitize` es la operación estrella**: representa el caso de uso real —dejar una foto
+  lista para publicar— y encadena `anonymize` → `clean` → `compress`. Se implementa con
+  **composición de tareas Celery (`chain`)**, donde cada etapa recibe la salida de la
+  anterior. Es el argumento de composición de tareas en la defensa. No incluye `convert`
+  porque `compress` ya reescribe el archivo; convertir de formato es una decisión
+  explícita del usuario, no parte del saneamiento.
 - **`inspect` es la demo de apertura**: mostrar que una foto cualquiera del celular
-  revela las coordenadas de dónde se tomó vale más que cualquier explicación.
+  revela las coordenadas de dónde se tomó vale más que cualquier explicación. Es también
+  la única operación que no genera archivo.
 - `convert` y `compress` comparten implementación (el guardado de Pillow) pero son
   operaciones distintas de cara al usuario.
 
@@ -81,7 +86,8 @@ Notas de diseño:
   metadatos se eliminaron, el informe de `inspect`), que son unos pocos cientos de bytes
   y llegan en la respuesta de `status`, sin necesidad de descargar nada. `inspect` es el
   caso en que solo hay datos y ningún archivo.
-- **Evento de auditoría**: registro de cada transición, persistido por el auditor.
+- **Evento de auditoría**: registro de cada transición de un trabajo, persistido por el
+  auditor. Son cinco: `received`, `queued`, `started`, `done` y `failed`.
 
 ## 6. Ciclo de vida de un trabajo
 
@@ -98,18 +104,22 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 ## 7. Funcionalidades por entidad
 
 ### Cliente CLI
-- `--user`, `--host`, `--port` (conexión e identidad).
+- `--user`, `--host`, `--port` (identidad y conexión; el puerto por defecto es 9000).
+  `--host` acepta tanto direcciones IPv4 como IPv6, o un nombre de host.
 - `--action submit --file foto.jpg --op <operación> [parámetros]` → devuelve `job_id`.
-- `--action status --job-id X` → estado actual.
-- `--action download --job-id X -o salida` → descarga resultado(s).
+- `--action status --job-id X` → estado actual y datos del resultado.
+- `--action download --job-id X -o salida` → descarga el archivo del trabajo.
 - `--action history [--limit N]` → últimos trabajos del usuario.
-- `--wait` en el submit: espera asíncrona y descarga directa al terminar.
+- `--wait` en el submit: espera asíncrona y descarga directa al terminar, con
+  `--timeout` (300 s por defecto) como límite.
 - Validación local antes de enviar (archivo existe, formato soportado, tamaño máximo).
 
 ### Servidor
-- Acepta N clientes concurrentes (asyncio, TCP, IPv4/IPv6).
+- Acepta N clientes concurrentes (asyncio, TCP), **escuchando en IPv4 e IPv6 a la vez**
+  mediante un socket dual-stack.
 - Valida solicitudes, guarda el original en el almacenamiento compartido, encola en Celery.
-- Responde estado (result backend), historial (vía auditor) y descargas.
+- Responde consultas de estado, historial y descargas, resolviendo cada trabajo contra su
+  índice en memoria y, si no está ahí, contra SQLite en modo solo lectura.
 - Notifica cada evento al auditor por IPC.
 - Apagado limpio ante SIGINT/SIGTERM.
 
@@ -120,9 +130,10 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 - Escalado horizontal: `docker compose up --scale worker=N`.
 
 ### Proceso auditor
-- Recibe eventos por `multiprocessing.Queue`; único escritor de SQLite.
+- Recibe los eventos del servidor por `multiprocessing.Queue` y los persiste en SQLite.
 - Es el **único escritor** de la base. El servidor lee de ella por su cuenta, en modo
-  solo lectura, para responder el historial.
+  solo lectura, para responder el historial y para recuperar los trabajos en curso
+  cuando se reinicia.
 
 ## 8. Alcance y recortes (v1)
 

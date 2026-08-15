@@ -44,6 +44,31 @@ El cliente **también** ocupa un puerto, pero no lo elige: al conectarse, el sis
 operativo le asigna uno libre del rango alto (puerto *efímero*). No necesita una
 dirección conocida porque nadie lo llama a él; solo necesita una dirección de retorno.
 
+### IPv4, IPv6 y sockets dual-stack
+
+Conviven hoy **dos familias de direcciones**. IPv4 usa 32 bits —los clásicos
+`192.168.0.10`, unos 4.300 millones de direcciones, hace años agotadas— e IPv6 usa 128
+bits, escritos en hexadecimal y separados por dos puntos
+(`2001:db8::1`), con un espacio que en la práctica no se agota.
+
+Para un socket no son intercambiables: son **familias distintas**, `AF_INET` y
+`AF_INET6`. Un servidor que abre un socket IPv4 simplemente no existe para un cliente que
+llega por IPv6.
+
+La forma de atender a los dos es el **socket dual-stack**: se abre un socket `AF_INET6`
+escuchando en la dirección `::` (el equivalente a `0.0.0.0`, "todas las interfaces") y se
+deja desactivada la opción `IPV6_V6ONLY`. Con eso el sistema operativo acepta también
+conexiones IPv4, presentándolas como direcciones IPv6 mapeadas (`::ffff:192.168.0.10`).
+Un solo socket, un solo puerto, las dos familias.
+
+En Python, `asyncio.start_server(handler, host=None, port=9000)` hace exactamente eso:
+con `host=None` abre el servidor en todas las interfaces disponibles de ambas familias.
+Del lado del cliente, `asyncio.open_connection` resuelve el nombre o la dirección y elige
+la familia que corresponda, sin que haya que decidirlo en el código.
+
+Sostener IPv6 no cuesta trabajo adicional y evita que el servicio quede inaccesible en
+redes que ya operan sobre esa familia.
+
 ### Cómo un solo puerto atiende a muchos clientes
 
 Si todos los clientes se conectan al mismo puerto, ¿no se mezclan las conversaciones?
