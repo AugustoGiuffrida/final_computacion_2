@@ -188,6 +188,56 @@ Cumple dos funciones bien distintas:
 **2. Persistir los eventos** del ciclo de vida —encolado, iniciado, terminado,
 fallado— que el servidor le va enviando después.
 
+#### El recorrido de una imagen que entra
+
+```
+1. El cliente envía la imagen.
+
+2. El servidor genera el job_id y escribe los bytes en
+   storage/uploads/<job_id>/.
+
+3. El servidor le pasa al proceso de ingreso, por la cola de pedidos:
+   job_id, usuario, operación, parámetros y la ruta del archivo.
+
+4. El ingreso ABRE LA IMAGEN.
+       │
+       ├── no es válida ──► responde "invalid"
+       │                    → el servidor borra el archivo
+       │                    → NO se guarda nada en la base
+       │                    → responde INVALID_IMAGE al cliente.     FIN
+       │
+       └── es válida ─────► sigue ↓
+
+5. El ingreso calcula el sha256 del contenido del archivo.
+
+6. El ingreso busca duplicados: mismo usuario, mismo sha256,
+   misma operación, mismos parámetros, y en estado DONE.
+       │
+       ├── ENCUENTRA uno ──► responde "duplicate", of: b8e1
+       │                     → el servidor borra el archivo recién recibido
+       │                       (el original ya está guardado bajo b8e1)
+       │                     → NO encola nada en Celery
+       │                     → NO se inserta una fila nueva
+       │                     → responde al cliente el job_id b8e1, ya en DONE
+       │                       y con deduplicated: true.               FIN
+       │
+       └── NO encuentra ───► INSERTA la fila del trabajo en SQLite,
+                             con el sha256 y estado QUEUED    ← ACÁ SE PERSISTE
+                             → responde "new"
+                             → el servidor encola la tarea en Celery,
+                               la registra en su índice en memoria
+                               y envía el evento `queued`
+                             → responde al cliente el job_id nuevo,
+                               en estado QUEUED.                       FIN
+```
+
+Tres cosas que conviene retener de este recorrido. **La fila del trabajo se escribe en el
+paso 6 y solo en la rama "nueva"**: una imagen inválida no deja rastro en la base, y una
+duplicada tampoco crea una fila propia. **El archivo recibido se borra en dos de los tres
+desenlaces**, porque es imprescindible tenerlo en disco para poder hashearlo, pero deja
+de servir si el trabajo no prospera. Y **el `job_id` que recibe el cliente no siempre es
+el que el servidor generó**: en el caso duplicado es el del trabajo anterior.
+
 #### Por qué es un proceso y no un hilo
 
 Esta es la justificación central del componente, y conviene tenerla precisa: **la única
@@ -483,6 +533,9 @@ pueda desplegarse por separado, que es la condición de un sistema distribuido.
    `failed`—, actualiza el índice y envía los eventos al proceso de ingreso, que los
    persiste en SQLite.
 9. El cliente consulta `status` y descarga con `download` (o todo junto con `--wait`).
+
+El paso 5 es el más ramificado del sistema; su recorrido completo, con los tres
+desenlaces y lo que se persiste en cada uno, está en la sección 4.3.
 
 ## 10. Cumplimiento de requisitos
 

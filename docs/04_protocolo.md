@@ -407,6 +407,32 @@ servidor resuelve la descarga por completo con esas dos fuentes más el volumen 
 
 ### 5.2 Envío de una imagen (`submit`)
 
+Es la operación más elaborada del protocolo: intervienen los dos procesos del servidor y
+puede terminar de tres maneras distintas.
+
+#### Los tres desenlaces posibles
+
+A diferencia de los demás pedidos, un `submit` puede terminar de tres maneras distintas,
+según lo que determine el proceso de ingreso al revisar la imagen:
+
+| Desenlace | Respuesta al cliente | ¿Se encola? | ¿Queda registrado? |
+|---|---|---|---|
+| Imagen inválida | `error` con código `INVALID_IMAGE` | no | no |
+| Contenido ya procesado | `ok` con el `job_id` **anterior**, `status: DONE`, `deduplicated: true` | no | no se crea fila nueva |
+| Imagen nueva | `ok` con el `job_id` nuevo, `status: QUEUED` | sí | sí |
+
+El segundo caso es el que conviene tener presente: **el `job_id` que devuelve el servidor
+no siempre es el que generó para este pedido**. Cuando el contenido ya fue procesado, lo
+que llega es la referencia al trabajo anterior, que ya tiene su resultado disponible para
+descargar. El campo `deduplicated` es lo que le permite al cliente distinguir los casos.
+
+El árbol de decisión completo —qué revisa el proceso de ingreso, en qué orden y qué se
+persiste en cada rama— está en la sección 4.3 de
+[02_arquitectura.md](02_arquitectura.md), porque es lógica interna del servidor y no
+parte del protocolo.
+
+#### Paso a paso
+
 **En el cliente:**
 
 1. Verifica que el archivo exista, que la extensión esté soportada y que no supere el
