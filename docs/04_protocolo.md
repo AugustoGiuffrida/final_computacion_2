@@ -97,7 +97,7 @@ porque ninguna operación de la v1 lo necesita.
 
 ### 2.3 Propiedad: quién puede descargar qué
 
-Cada trabajo queda asociado al **usuario que lo creó**, dato que el auditor persiste en
+Cada trabajo queda asociado al **usuario que lo creó**, dato que el proceso de ingreso persiste en
 la tabla `jobs`. El servidor aplica una regla simple en `status`, `download` e
 `history`: **solo sirve trabajos cuyo `user` coincida con el del pedido**. Si no
 coincide, responde `FORBIDDEN`.
@@ -226,16 +226,27 @@ cada bloque le da al event loop oportunidades frecuentes de atender a otros clie
  "filename": "foto.jpg", "payload_size": 3145728}
 ```
 
-**Respuesta** (sin payload):
+**Respuesta** (imagen nueva, encolada para procesar):
 
 ```json
 {"type": "ok", "job_id": "a3f7b2c1-9e4d-4b8a-b3c7-1f2e5d8a9c40",
- "status": "QUEUED", "payload_size": 0}
+ "status": "QUEUED", "deduplicated": false, "payload_size": 0}
 ```
 
-El servidor valida, guarda la imagen, encola la tarea y responde **de inmediato**: no
-espera al resultado. Esa respuesta rápida es lo que le permite seguir atendiendo a los
-demás clientes.
+**Respuesta** (esta imagen ya había sido procesada con la misma operación):
+
+```json
+{"type": "ok", "job_id": "b8e1d4f2-3c7a-4e91-8d25-6b0f3a1c9e47",
+ "status": "DONE", "deduplicated": true, "payload_size": 0}
+```
+
+El `job_id` que llega en el segundo caso es el del **trabajo anterior**, no uno nuevo:
+el resultado ya existe y se puede descargar en el acto. El campo `deduplicated` es lo
+que le permite al cliente distinguir los dos casos e informarlo al usuario.
+
+El servidor no espera a que la imagen se procese. Lo único que sí espera antes de
+contestar es la revisión del proceso de ingreso, que verifica la imagen y determina si
+es duplicada (ver sección 5.2).
 
 ### 4.2 `status` — consultar el estado de un trabajo
 
@@ -331,13 +342,14 @@ Es el pedido inverso al `submit`: sin payload de ida, con payload de vuelta.
 
 Es el único pedido que se resuelve contra SQLite. El servidor **lee la base
 directamente, en modo solo lectura**, con `asyncio.to_thread(...)` para no bloquear el
-event loop. No le pregunta al auditor: la `mp.Queue` es de una sola dirección
-(servidor → auditor) y agregar un canal de vuelta obligaría a numerar pedidos y
-respuestas sin ninguna ganancia.
+event loop. Podría pedírselo al proceso de ingreso —el canal de respuestas existe— pero sería un
+viaje de ida y vuelta entre procesos para obtener algo que el servidor puede leer por su
+cuenta. Ese canal está reservado para lo que sí necesita el trabajo del hijo: revisar
+imágenes.
 
-Esto no contradice que el auditor sea el único escritor. **SQLite admite muchos lectores
+Esto no contradice que el proceso de ingreso sea el único escritor. **SQLite admite muchos lectores
 simultáneos**; lo que no admite son escritores concurrentes. El diseño respeta
-exactamente ese modelo: un solo escritor (el auditor) y los lectores que hagan falta.
+exactamente ese modelo: un solo escritor (el proceso de ingreso) y los lectores que hagan falta.
 
 La consulta filtra por el usuario del pedido, así que cada cliente ve solo sus propios
 trabajos, ordenados del más reciente al más antiguo.
@@ -363,19 +375,17 @@ que pregunta.
 
 #### Por qué existe el índice en memoria
 
-No es una optimización: **resuelve una condición de carrera concreta**.
+Cumple dos funciones: es la **lista de vigilancia del monitor** —qué trabajos hay que
+seguir consultando en el result backend— y es una **caché** que evita ir al disco en cada
+consulta de estado.
 
-Cuando el servidor acepta un `submit`, deposita el evento en la cola del auditor y
-responde de inmediato, **sin esperar** a que el auditor escriba en SQLite — esa es
-justamente la razón de ser del IPC asíncrono. Pero con `--wait` el cliente consulta el
-estado un segundo después. Si el servidor buscara solo en SQLite, es perfectamente
-posible que la fila todavía no esté escrita y respondiera `JOB_NOT_FOUND` **sobre un
-trabajo que él mismo acaba de aceptar**.
+Lo que **no** hace es cubrir una condición de carrera, porque no existe ninguna: el
+proceso de ingreso **inserta la fila en SQLite antes** de confirmarle al servidor que el
+trabajo es nuevo. Para cuando el cliente recibe su `job_id`, la fila ya está escrita, así
+que una consulta inmediata siempre encuentra el trabajo, esté o no en el índice.
 
-El índice cierra esa ventana: el servidor conoce sus propios trabajos sin depender de que
-el auditor ya los haya persistido. Las entradas de trabajos terminados se descartan unos
-minutos después, cuando su escritura en SQLite ya está garantizada, de modo que el índice
-queda acotado al trabajo reciente y no crece indefinidamente.
+Las entradas de trabajos terminados se descartan unos minutos después, de modo que el
+índice queda acotado al trabajo reciente y no crece indefinidamente.
 
 #### Cuándo se consulta Redis (y cuándo no)
 
@@ -413,21 +423,48 @@ servidor resuelve la descarga por completo con esas dos fuentes más el volumen 
 6. Lee el payload **en bloques de 64 KB y los escribe directamente en el archivo**,
    sin acumular la imagen en memoria. Si la conexión se corta antes de completar
    `payload_size`, `readexactly` lanza excepción y el directorio se descarta.
-7. Verifica que el archivo sea realmente una imagen abriéndolo con `Image.open()` de
-   Pillow. Si no lo es, responde `INVALID_IMAGE` y borra lo recibido.
+   El servidor **no abre la imagen en ningún momento**: para él son bytes que recibe y
+   escribe. Interpretar contenido no confiable es tarea del proceso de ingreso.
 
-   Esto **no contradice** la regla de no hacer trabajo de CPU en el event loop:
-   `Image.open()` es perezoso, lee únicamente la cabecera del archivo para identificar
-   formato y dimensiones, y **no decodifica los píxeles**. Son microsegundos. La
-   decodificación completa —que sí es cara— ocurre en el worker.
-8. Encola la tarea en Celery con `asyncio.to_thread(...)`, para que la llamada
-   bloqueante a Redis no frene el event loop.
-9. Envía los eventos `received` y `queued` al auditor por la `mp.Queue`, y agrega el
-   trabajo a su índice en memoria de trabajos en curso.
-10. Responde `{job_id, status: "QUEUED"}`.
+**En el proceso de ingreso** (el servidor le envía el pedido y espera la respuesta):
 
-Los pasos 4 a 10 llevan milisegundos: el servidor **nunca espera** a que la imagen se
-procese.
+7. Recibe `{kind: "intake", job_id, user, op, params, path}` por la cola de pedidos.
+8. **Verifica** que sea una imagen válida abriéndola y decodificándola con Pillow. Si
+   falla, responde `{job_id, result: "invalid", reason: "…"}`.
+9. **Calcula el `sha256`** del contenido del archivo.
+10. **Busca duplicados** con la consulta de la sección 7.1 de
+    [02_arquitectura.md](02_arquitectura.md): mismo usuario, mismo hash, misma operación,
+    mismos parámetros, y en estado `DONE`.
+    - Si encuentra uno, responde `{job_id, result: "duplicate", of: "<job_id anterior>"}`.
+    - Si no, **inserta la fila del trabajo** en SQLite con el `sha256` y estado `QUEUED`,
+      y responde `{job_id, result: "new"}`.
+
+**De vuelta en el servidor**, según la respuesta:
+
+11. **`invalid`** → borra el directorio recibido y responde `INVALID_IMAGE`. El trabajo
+    no queda registrado en ningún lado.
+12. **`duplicate`** → borra el directorio recibido —el original ya está guardado bajo el
+    trabajo anterior— y responde `{job_id: <el anterior>, status: "DONE",
+    deduplicated: true}`. **No encola nada**: el resultado ya existe y está disponible
+    para descargar de inmediato.
+13. **`new`** → encola la tarea en Celery con `asyncio.to_thread(...)`, agrega el trabajo
+    a su índice en memoria, envía el evento `queued` y responde
+    `{job_id, status: "QUEUED"}`.
+
+#### Sobre los tiempos
+
+El `submit` es la única operación en la que el servidor **espera a otro proceso** antes
+de contestar. Verificar y hashear una imagen de 3 MB lleva del orden de 50 a 100 ms,
+y como el ingreso revisa de a una por vez, varios `submit` simultáneos hacen fila ahí.
+
+Es un costo aceptado a cambio de dos cosas: rechazar imágenes corruptas antes de que
+entren a la cola, y evitar reprocesar lo que ya está hecho. La espera **no bloquea el
+event loop** —la corrutina se suspende en el `Future` y el servidor sigue atendiendo a
+todos los demás—, y la mitigación evidente, un pool de procesos de ingreso, queda
+documentada en `TODO.md`.
+
+En el caso duplicado, el `submit` termina siendo **más rápido** que uno normal: no hay
+encolado ni procesamiento, el resultado ya está.
 
 ### 5.3 Consulta de estado (`status`)
 
@@ -599,13 +636,24 @@ Cliente                                             Servidor
    │═══ conexión TCP a 192.168.0.10:9000 ═════════════►│  accept() → socket dedicado
    │                                                   │
    │──► [4B: 142] [header submit] [3 MB de JPEG] ─────►│  lee en bloques de 64 KB
-   │                                                   │  valida la imagen
-   │                                                   │  guarda uploads/a3f7…/foto.jpg
    │                                                   │  genera job_id (UUID v4)
+   │                                                   │  guarda uploads/a3f7…/foto.jpg
+   │                                                   │       │
+   │                                                   │       │ cola de pedidos
+   │                                                   │       ▼   ┌──────────────┐
+   │                                                   │  ─────────►│ INGRESO      │
+   │                                                   │            │ verifica     │
+   │                                                   │            │ hashea       │
+   │                                                   │            │ busca dup.   │
+   │                                                   │            │ inserta fila │
+   │                                                   │  ◄─────────│              │
+   │                                                   │   "new"    └──────────────┘
+   │                                                   │       cola de respuestas
+   │                                                   │
    │                                                   │  encola la tarea en Celery
-   │                                                   │  avisa al auditor (mp.Queue)
-   │◄── [4B: 78] [{"type":"ok","job_id":"a3f7…",       │
-   │             "status":"QUEUED"}] ──────────────────│  (todo esto: milisegundos)
+   │                                                   │  envía el evento `queued`
+   │◄── [4B: 92] [{"type":"ok","job_id":"a3f7…",       │
+   │      "status":"QUEUED","deduplicated":false}] ────│  (~100 ms: espera al ingreso)
    │                                                   │
    │──► [status a3f7…] ───────────────────────────────►│  consulta el result backend
    │◄── [{"status":"PROCESSING"}] ─────────────────────│

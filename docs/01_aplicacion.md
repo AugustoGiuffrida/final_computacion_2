@@ -29,7 +29,8 @@ Construir una aplicación cliente-servidor en Python donde:
   resultados y revisa su historial.
 - El **servidor** (asyncio) atiende N clientes concurrentes y delega el procesamiento
   en **workers Celery** a través de un broker **Redis**.
-- Un **proceso auditor** (IPC con el servidor) persiste el historial en **SQLite**.
+- Un **proceso de ingreso** (IPC con el servidor) revisa cada imagen que entra —la
+  verifica, la identifica y descarta duplicados— y persiste el historial en **SQLite**.
 - Todo el stack se despliega con **Docker Compose**.
 
 ## 3. Operaciones soportadas (v1)
@@ -86,8 +87,11 @@ Notas de diseño:
   metadatos se eliminaron, el informe de `inspect`), que son unos pocos cientos de bytes
   y llegan en la respuesta de `status`, sin necesidad de descargar nada. `inspect` es el
   caso en que solo hay datos y ningún archivo.
-- **Evento de auditoría**: registro de cada transición de un trabajo, persistido por el
-  auditor. Son cinco: `received`, `queued`, `started`, `done` y `failed`.
+- **Evento**: registro de cada transición de un trabajo, persistido por el proceso de
+  ingreso. Son cuatro: `queued`, `started`, `done` y `failed`.
+- **Huella del contenido (`sha256`)**: identifica una imagen por lo que *es*, no por
+  cómo se llama. Dos archivos con nombres distintos y el mismo contenido tienen la misma
+  huella. Es lo que permite detectar que un trabajo ya fue hecho.
 
 ## 6. Ciclo de vida de un trabajo
 
@@ -107,6 +111,8 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 - `--user`, `--host`, `--port` (identidad y conexión; el puerto por defecto es 9000).
   `--host` acepta tanto direcciones IPv4 como IPv6, o un nombre de host.
 - `--action submit --file foto.jpg --op <operación> [parámetros]` → devuelve `job_id`.
+  Si esa imagen ya fue procesada con esa misma operación, devuelve el `job_id` anterior
+  ya terminado, y lo indica.
 - `--action status --job-id X` → estado actual y datos del resultado.
 - `--action download --job-id X -o salida` → descarga el archivo del trabajo.
 - `--action history [--limit N]` → últimos trabajos del usuario.
@@ -122,7 +128,7 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 - Valida solicitudes, guarda el original en el almacenamiento compartido, encola en Celery.
 - Responde consultas de estado, historial y descargas, resolviendo cada trabajo contra su
   índice en memoria y, si no está ahí, contra SQLite en modo solo lectura.
-- Notifica cada evento al auditor por IPC.
+- Notifica cada evento al proceso de ingreso por IPC.
 - Apagado limpio ante SIGINT/SIGTERM.
 
 ### Workers Celery
@@ -131,9 +137,15 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 - Reintentos automáticos ante fallos transitorios; errores definitivos con motivo.
 - Escalado horizontal: `docker compose up --scale worker=N`.
 
-### Proceso auditor
-- Recibe los eventos del servidor por `multiprocessing.Queue` y los persiste en SQLite.
-- Es el **único escritor** de la base. El servidor lee de ella por su cuenta, en modo
+### Proceso de ingreso
+- Por cada imagen que llega: la **verifica** (que sea válida y no esté corrupta),
+  calcula su **SHA-256** y busca si ese contenido ya fue procesado por ese usuario con
+  esa misma operación y parámetros. Le confirma al servidor una de tres cosas: inválida,
+  duplicada o nueva.
+- Es el **único proceso que abre imágenes fuera de los workers**, y por eso vive
+  aislado: decodificar contenido no confiable puede tirar abajo el proceso, y acá esa
+  caída no arrastra al servidor.
+- Es el **único escritor** de SQLite. El servidor lee de la base por su cuenta, en modo
   solo lectura, para responder el historial y para recuperar los trabajos en curso
   cuando se reinicia.
 

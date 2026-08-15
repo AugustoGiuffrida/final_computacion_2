@@ -26,40 +26,94 @@ De esa separación se derivan todas las decisiones que siguen.
 ![Arquitectura del sistema](img/arquitectura.svg)
 
 **Cómo leerlo**: el cliente habla con el servidor por un socket TCP. El servidor guarda
-la imagen en el volumen compartido, deja la tarea en Redis y le avisa al auditor. Un
-worker toma la tarea de Redis, lee la imagen del volumen, la procesa y guarda el
-resultado en el mismo volumen. El cliente después consulta el estado y descarga el
-resultado, siempre a través del servidor.
+la imagen en el volumen compartido y le pide al **proceso de ingreso** que la revise;
+solo si la aprueba y no es duplicada, deja la tarea en Redis. Un worker la toma de ahí,
+lee la imagen del volumen, la procesa y guarda el resultado en el mismo volumen. El
+cliente después consulta el estado y descarga el resultado, siempre a través del
+servidor.
 
 Notar que **el cliente solo conoce al servidor**: no sabe que existen Redis, los workers
-ni el auditor. Toda la complejidad interna queda detrás de una única dirección y un
+ni el proceso de ingreso. Toda la complejidad interna queda detrás de una única dirección y un
 único puerto, y eso permite cambiar la mitad de atrás —agregar workers, cambiar el
 broker— sin tocar el cliente ni el protocolo.
 
 ## 3. Los canales de comunicación
 
-El sistema usa **cuatro canales distintos**, cada uno con un alcance diferente. Esta
+El sistema usa **cinco canales distintos**, cada uno con un alcance diferente. Esta
 tabla es el resumen de la arquitectura:
 
 | Canal | Une | Alcance | Qué transporta |
 |---|---|---|---|
 | **Socket TCP** | cliente ↔ servidor | entre máquinas | pedidos e imágenes |
-| **multiprocessing.Queue** | servidor → auditor (una dirección) | misma máquina, procesos emparentados | eventos de auditoría |
+| **multiprocessing.Queue** ×2 | servidor ↔ proceso de ingreso | misma máquina, procesos emparentados | pedidos de revisión, sus respuestas y los eventos |
 | **Redis** | servidor ↔ workers | entre máquinas, procesos sin relación | invocaciones y estados |
-| **Volumen compartido** | servidor ↔ workers | mismo sistema de archivos | los archivos de imagen |
-| **SQLite** | auditor → servidor | mismo sistema de archivos | el historial ya persistido |
+| **Volumen compartido** | servidor ↔ workers ↔ ingreso | mismo sistema de archivos | los archivos de imagen |
+| **SQLite** | ingreso → servidor | mismo sistema de archivos | el historial ya persistido |
 
 La lógica del reparto: los sockets son el único mecanismo que cruza la red hacia
-clientes externos; la Queue es lo más simple y directo entre dos procesos emparentados,
-pero no funciona fuera de la máquina; Redis coordina procesos que ni se conocen; y el
-disco compartido lleva lo que pesa, porque ninguno de los otros canales está pensado
-para megabytes.
+clientes externos; las Queues son lo más simple y directo entre dos procesos
+emparentados, pero no funcionan fuera de la máquina; Redis coordina procesos que ni se
+conocen; y el disco compartido lleva lo que pesa, porque ninguno de los otros canales
+está pensado para megabytes.
 
-La última fila merece una aclaración, porque no es un canal en el sentido habitual: el
-auditor y el servidor **no se hablan** a través de la base, pero como uno escribe y el
-otro lee, la información fluye igual en esa dirección. Es el camino por el que el
-servidor recupera lo que ya no tiene en memoria — el historial, y los trabajos en curso
-después de un reinicio.
+La última fila merece una aclaración, porque no es un canal en el sentido habitual: los
+dos procesos **no se hablan** a través de la base, pero como uno escribe y el otro lee,
+la información fluye igual en esa dirección. Es el camino por el que el servidor
+recupera lo que ya no tiene en memoria — el historial, y los trabajos en curso después
+de un reinicio.
+
+### 3.1 El IPC en detalle: dos colas y una correlación
+
+El servidor y el proceso de ingreso se comunican con **dos `multiprocessing.Queue`**,
+una en cada sentido:
+
+```
+                     cola de PEDIDOS  ──────────────►
+   ┌──────────────┐   {kind: "intake", job_id, …}   ┌──────────────────┐
+   │   SERVIDOR   │   {kind: "event",  job_id, …}   │ PROCESO DE       │
+   │  (asyncio)   │                                  │ INGRESO          │
+   └──────────────┘   ◄──────  cola de RESPUESTAS   └──────────────────┘
+                       {job_id, result: "new" | "duplicate" | "invalid"}
+```
+
+**Por la cola de pedidos viajan dos tipos de mensaje.** Los de tipo `event` son
+*sin respuesta*: el servidor los deposita y sigue, sin esperar nada. Los de tipo
+`intake` **sí esperan respuesta**, y por eso existe la segunda cola.
+
+**Cómo confirma el hijo que la imagen es válida.** La cola de respuestas es de solo
+lectura para el servidor, y `get()` sobre ella bloquea — no se puede llamar dentro del
+event loop. El mecanismo es el siguiente:
+
+```python
+# Al arrancar el servidor: un diccionario de pedidos esperando respuesta
+pendientes: dict[str, asyncio.Future] = {}
+
+# Corrutina de fondo que corre todo el tiempo
+async def bomba_de_respuestas():
+    while True:
+        resp = await asyncio.to_thread(respuestas.get)   # bloquea en un hilo aparte
+        fut = pendientes.pop(resp["job_id"], None)
+        if fut and not fut.done():
+            fut.set_result(resp)                          # despierta al submit
+
+# En el handler de submit, dentro de la corrutina que atiende a ese cliente
+fut = asyncio.get_running_loop().create_future()
+pendientes[job_id] = fut
+pedidos.put({"kind": "intake", "job_id": job_id, "user": user,
+             "op": op, "params": params, "path": ruta})
+resp = await asyncio.wait_for(fut, timeout=30)            # ← acá espera la confirmación
+```
+
+Las piezas son tres. El **`job_id` funciona como identificador de correlación**: es lo
+que permite saber a qué pedido corresponde cada respuesta, porque puede haber varios
+`submit` en curso al mismo tiempo. El **`Future`** es el punto donde la corrutina del
+cliente queda suspendida sin bloquear a nadie más. Y la **bomba de respuestas** es una
+única corrutina de fondo que hace de puente entre el mundo bloqueante de la cola y el
+event loop, usando `asyncio.to_thread` para que la espera ocurra en un hilo.
+
+El `wait_for` con tiempo límite cubre el caso en que el hijo muera en el medio: el
+`submit` falla con error en lugar de quedarse esperando para siempre, y el servidor
+relanza el proceso.
 
 ## 4. Componentes
 
@@ -88,42 +142,89 @@ Atiende N conexiones concurrentes sobre un solo hilo con asyncio, escuchando en 
 Sus responsabilidades:
 
 - Aceptar conexiones y leer los pedidos según el protocolo (sección 5).
-- Validar cada pedido: operación existente, imagen bien formada, tamaño dentro del límite.
+- Validar la **forma** de cada pedido: operación existente, campos presentes, tamaño
+  dentro del límite. **No mira el contenido de la imagen** — de eso se encarga el
+  proceso de ingreso.
 - **Guardar la imagen original** en el volumen compartido, bajo `uploads/<job_id>/`.
-- **Encolar la tarea** en Celery, pasándole la ruta y los parámetros.
-- **Notificar cada evento al auditor** por la `multiprocessing.Queue`.
+- **Pedirle al proceso de ingreso que la revise** y esperar su confirmación antes de
+  responderle al cliente.
+- **Encolar la tarea** en Celery —solo si el ingreso la aprobó y no es duplicada—
+  pasándole la ruta y los parámetros.
+- **Notificar los eventos posteriores** al proceso de ingreso por la
+  `multiprocessing.Queue`.
+- **Supervisar al proceso de ingreso** y relanzarlo si muere.
 - Mantener un **índice en memoria** de los trabajos aceptados desde que arrancó (usuario,
   operación, estado, ruta de salida). Es lo que le permite responder por un trabajo recién
-  creado sin depender de que el auditor ya lo haya persistido.
+  creado sin depender de que el proceso de ingreso ya lo haya persistido.
 - Responder consultas de estado e historial resolviendo el trabajo contra ese índice y,
   si no está ahí, contra SQLite en modo solo lectura. Consulta el result backend de Celery
   **solo cuando el trabajo sigue en curso**.
 - Servir las descargas, leyendo el resultado del volumen.
 - Vigilar los trabajos en curso (sección 4.5).
 - Apagarse ordenadamente ante SIGINT/SIGTERM: dejar de aceptar conexiones, cerrar las
-  abiertas y avisar al auditor para que cierre la base.
+  abiertas y avisar al proceso de ingreso para que cierre la base.
 
-Lo que el servidor **no** hace, y es deliberado: **no procesa imágenes**. Cualquier
-trabajo de CPU dentro del event loop congelaría a todos los clientes conectados.
+Lo que el servidor **no** hace, y es deliberado: **no procesa imágenes ni siquiera las
+abre**. Cualquier trabajo de CPU dentro del event loop congelaría a todos los clientes
+conectados, y decodificar contenido no confiable podría directamente tirar abajo el
+proceso. Para el servidor, una imagen es una cantidad de bytes que recibe, guarda y
+entrega — nunca interpreta lo que hay adentro.
 
-### 4.3 Auditor — proceso hijo
+### 4.3 Proceso de ingreso — proceso hijo
 
-Proceso que el servidor lanza al arrancar, conectado por una `multiprocessing.Queue`.
+Proceso que el servidor lanza al arrancar. Es **el único que manipula el contenido de
+las imágenes fuera de los workers**, y **el único que escribe en SQLite**.
 
-Recibe los eventos que el servidor deposita en la cola —trabajo recibido, encolado,
-iniciado, terminado, fallado— y los persiste en SQLite. Es el **único proceso que
-escribe** en la base.
+Cumple dos funciones bien distintas:
 
-Existe por dos razones que se resuelven con una sola decisión. Escribir en disco es una
-operación de espera, y hacerla dentro del event loop congelaría a todos los clientes.
-Y SQLite tolera mal varios escritores simultáneos: al haber uno solo, ese problema
-directamente no se presenta.
+**1. Revisar cada imagen que entra**, antes de que el servidor le conteste al cliente:
 
-**La `mp.Queue` es de una sola dirección** (servidor → auditor) y el servidor nunca
-espera respuesta: deposita el evento y sigue. Cuando necesita *leer* el historial, lee
-SQLite por su cuenta en modo solo lectura, porque **SQLite admite muchos lectores
-simultáneos** — la restricción es solo sobre los escritores. Un canal de vuelta
-obligaría a numerar pedidos y respuestas sin ninguna ganancia.
+- **Verificar** que sea una imagen válida y no esté corrupta, abriéndola con Pillow.
+- **Calcular el SHA-256** de su contenido.
+- **Buscar duplicados**: si ese mismo usuario ya procesó ese mismo contenido con esa
+  misma operación y esos mismos parámetros, el trabajo no hace falta.
+- Si es nueva, **registrar la fila del trabajo** en SQLite.
+
+**2. Persistir los eventos** del ciclo de vida —encolado, iniciado, terminado,
+fallado— que el servidor le va enviando después.
+
+#### Por qué es un proceso y no un hilo
+
+Esta es la justificación central del componente, y conviene tenerla precisa: **la única
+cosa que un proceso ofrece y un hilo no es el aislamiento ante fallas**.
+
+Escribir en SQLite fuera del event loop se podría resolver perfectamente con un hilo,
+porque las escrituras a disco liberan el GIL. Si el proceso existiera solo para eso,
+estaría de más.
+
+Lo que sí exige un proceso separado es **decodificar imágenes que vienen de afuera**.
+Pillow y OpenCV son, por dentro, código nativo en C: una imagen malformada —por error o
+a propósito— puede provocar una caída del intérprete, no una excepción de Python que se
+pueda atrapar con un `try`. Si eso ocurriera dentro del servidor, se caerían **todas las
+conexiones abiertas** de todos los clientes, incluidas las que estuvieran en medio de
+una transferencia.
+
+En un proceso aparte, esa caída queda contenida: muere el hijo, el servidor ni se entera
+y lo vuelve a levantar. Por eso **el servidor nunca abre una imagen**: todo contacto con
+contenido no confiable ocurre en el proceso de ingreso o en los workers, ambos aislados.
+
+#### Supervisión
+
+El aislamiento sirve solo si alguien repone lo que se cae. El servidor **vigila que el
+proceso hijo siga vivo** y, si murió, lo relanza. Los pedidos que estaban esperando
+respuesta se resuelven con error, y el cliente recibe un fallo en ese `submit` en lugar
+de quedarse colgado.
+
+Como el hijo revisa **una imagen por vez**, la que estaba en curso cuando murió queda
+identificada sin ambigüedad: es la que provocó la caída.
+
+#### Por qué escribe la base y no la lee
+
+El servidor **lee SQLite por su cuenta**, en modo solo lectura, para el historial y para
+recuperar trabajos tras un reinicio. Eso no rompe nada: **SQLite admite muchos lectores
+simultáneos**, la restricción es solo sobre los escritores. Manteniendo un único escritor
+—este proceso— el problema de concurrencia no se presenta, y el servidor se ahorra un
+viaje de ida y vuelta para cada consulta.
 
 ### 4.4 Workers
 
@@ -144,13 +245,13 @@ compress), donde cada etapa recibe la salida de la anterior.
 ### 4.5 Monitor de trabajos en curso
 
 Una corrutina de fondo dentro del servidor, necesaria por una limitación concreta: **los
-workers no pueden avisarle al auditor**. Viven en otros contenedores, y la
+workers no pueden avisarle al proceso de ingreso**. Viven en otros contenedores, y la
 `multiprocessing.Queue` solo comunica procesos emparentados de la misma máquina.
 
 El monitor mantiene la lista de los trabajos en vuelo y consulta periódicamente su estado
 en el result backend. Detecta **dos transiciones**: cuando un worker toma el trabajo
 (evento `started`, que es lo que permite informar `PROCESSING`) y cuando termina (`done`
-o `failed`). En ambos casos envía el evento al auditor y actualiza el índice en memoria;
+o `failed`). En ambos casos envía el evento al proceso de ingreso y actualiza el índice en memoria;
 al terminar, además, saca el trabajo de la lista de vigilancia.
 
 #### Recuperación al reiniciar el servidor
@@ -171,9 +272,9 @@ durante la caída se resuelven en la primera consulta.
 Tres lugares, tres roles:
 
 - **Volumen compartido (`storage/`)** — los archivos: originales en `uploads/<job_id>/`,
-  resultados en `results/<job_id>/`. Montado en el servidor y en todos los workers. Esa
-  condición es la que permite que por la cola viajen solo rutas: cuando el worker recibe
-  una, puede abrir el archivo directamente.
+  resultados en `results/<job_id>/`. Montado en el servidor, en el proceso de ingreso y
+  en todos los workers. Esa condición es la que permite que por las colas viajen solo
+  rutas: quien recibe una puede abrir el archivo directamente.
 - **Redis** — el estado **vivo** de las tareas. Efímero: deja de importar poco después
   de que el trabajo termina.
 - **SQLite (`jobs.db`)** — el historial **permanente**.
@@ -183,7 +284,7 @@ a Redis, historia a la base de datos.
 
 A esos tres se suma el **índice en memoria del servidor** (sección 4.2), que no es
 almacenamiento sino una caché: guarda los trabajos de la ejecución en curso para poder
-responder sin esperar al auditor ni ir al disco. Se pierde al reiniciar, y se reconstruye
+responder sin esperar al proceso de ingreso ni ir al disco. Se pierde al reiniciar, y se reconstruye
 desde SQLite.
 
 ### 4.7 Flower (opcional)
@@ -267,11 +368,12 @@ inconsistentes.
 
 ```sql
 CREATE TABLE jobs (
-  id          TEXT PRIMARY KEY,      -- UUID
+  id          TEXT PRIMARY KEY,      -- job_id (UUID v4)
   user        TEXT NOT NULL,
-  op          TEXT NOT NULL,
-  params      TEXT,                  -- JSON
-  filename    TEXT,
+  op          TEXT NOT NULL,         -- anonymize | clean | convert | compress | sanitize | inspect
+  params      TEXT NOT NULL,         -- JSON canónico: claves ordenadas
+  sha256      TEXT NOT NULL,         -- huella del contenido de la imagen de entrada
+  filename    TEXT,                  -- nombre original, solo informativo
   status      TEXT NOT NULL,         -- QUEUED | PROCESSING | DONE | ERROR
   error       TEXT,
   result_path TEXT,
@@ -279,14 +381,48 @@ CREATE TABLE jobs (
   finished_at TEXT
 );
 
+-- Índice que sostiene la búsqueda de duplicados: sin él, cada submit
+-- recorrería la tabla entera.
+CREATE INDEX idx_dedup ON jobs(user, sha256, op, params);
+
 CREATE TABLE events (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id  TEXT NOT NULL REFERENCES jobs(id),
-  kind    TEXT NOT NULL,             -- received | queued | started | done | failed
+  kind    TEXT NOT NULL,             -- queued | started | done | failed
   ts      TEXT NOT NULL,
   detail  TEXT
 );
 ```
+
+### 7.1 La búsqueda de duplicados
+
+La consulta que hace el proceso de ingreso por cada imagen que entra:
+
+```sql
+SELECT id FROM jobs
+ WHERE user = ? AND sha256 = ? AND op = ? AND params = ? AND status = 'DONE'
+ LIMIT 1;
+```
+
+Tres decisiones están codificadas ahí:
+
+**La identidad de un trabajo son cuatro campos, no solo el hash.** La misma foto
+difuminada con `strength=15` da un resultado distinto que con `strength=30`, así que la
+operación y sus parámetros forman parte de la identidad tanto como el contenido. Para que
+la comparación de `params` funcione como texto, se guarda en **forma canónica**: JSON con
+las claves siempre ordenadas.
+
+**Solo se reutilizan trabajos en estado `DONE`.** Uno que falló no sirve, y uno que está
+en curso tampoco: se procesa de nuevo. Esperar a que termine el que ya está corriendo
+sería más eficiente, pero agrega una coordinación que no vale la pena en esta versión.
+
+**El filtro por `user` es una decisión de privacidad, no de eficiencia.** Reutilizar el
+trabajo de otro usuario le revelaría que esa persona procesó la misma imagen. En una
+aplicación cuyo objeto es proteger la privacidad, eso sería contradictorio.
+
+Como consecuencia, en la tabla pueden convivir varias filas con el mismo `sha256` y
+distinto `op`: es la misma imagen procesada de maneras diferentes, y son trabajos
+legítimamente distintos.
 
 ## 8. Módulos del código
 
@@ -301,15 +437,17 @@ final_comp2/
 │   ├── client/
 │   │   └── client.py        # argparse + asyncio streams; una función por acción
 │   ├── server/
-│   │   ├── main.py          # argparse, arranque: lanza auditor, recupera trabajos
+│   │   ├── main.py          # argparse, arranque: lanza el proceso de ingreso, recupera trabajos
 │   │   │                    #   en curso, instala manejo de señales, inicia el loop
 │   │   ├── server.py        # asyncio.start_server + un handler por tipo de mensaje
 │   │   ├── registry.py      # resolución de trabajos: índice en memoria + lecturas
 │   │   │                    #   a SQLite (solo lectura)
 │   │   ├── jobs.py          # puente con Celery: encolar, consultar estado,
 │   │   │                    #   corrutina de monitoreo de trabajos en vuelo
-│   │   └── auditor.py       # proceso hijo: bucle sobre mp.Queue y escritura SQLite
-│   │                        #   (único escritor de la base)
+│   │   ├── ipc.py           # las dos colas, la bomba de respuestas y la
+│   │   │                    #   supervisión del proceso hijo
+│   │   └── intake.py        # proceso hijo: verificación de imágenes, hash,
+│   │                        #   deduplicación y escritura de SQLite
 │   └── worker/
 │       ├── celery_app.py    # instancia y configuración de Celery
 │       └── tasks.py         # tareas Pillow/OpenCV, una por operación + sanitize
@@ -327,25 +465,31 @@ pueda desplegarse por separado, que es la condición de un sistema distribuido.
 
 1. El cliente parsea los argumentos, valida el archivo y abre el socket TCP.
 2. Envía el pedido `submit` (header JSON + bytes de la imagen).
-3. El servidor —una corrutina por cliente— lee el pedido sin bloquear el loop, valida,
-   y guarda el original en `storage/uploads/<job_id>/`.
-4. Encola la tarea en Celery: queda un mensaje chico en Redis con la ruta y los
-   parámetros.
-5. Registra el trabajo en su **índice en memoria**, notifica `received` + `queued` al
-   auditor por la `mp.Queue` y responde el `job_id` al cliente. **Hasta acá,
-   milisegundos.**
-6. Un worker toma la tarea, lee la imagen del volumen, la procesa, escribe el resultado
+3. El servidor —una corrutina por cliente— lee el pedido sin bloquear el loop, valida su
+   forma, genera el `job_id` y guarda los bytes en `storage/uploads/<job_id>/`.
+4. Le pide al **proceso de ingreso** que revise la imagen y espera su respuesta.
+5. El ingreso verifica que sea una imagen válida, calcula su `sha256` y busca
+   duplicados. Devuelve una de tres cosas:
+   - **inválida** → el servidor borra el archivo y responde `INVALID_IMAGE`. Fin.
+   - **duplicada** → el servidor borra el archivo recién recibido y le responde al
+     cliente el `job_id` del trabajo anterior, ya en `DONE`. **No encola nada.** Fin.
+   - **nueva** → el ingreso ya dejó registrada la fila en SQLite; el flujo continúa.
+6. El servidor encola la tarea en Celery —un mensaje chico en Redis con la ruta y los
+   parámetros—, registra el trabajo en su **índice en memoria**, envía el evento
+   `queued` y responde el `job_id` al cliente.
+7. Un worker toma la tarea, lee la imagen del volumen, la procesa, escribe el resultado
    en `storage/results/<job_id>/` y reporta al result backend.
-7. El monitor del servidor detecta las transiciones —primero `started`, después `done` o
-   `failed`—, actualiza el índice y avisa al auditor, que las persiste en SQLite.
-8. El cliente consulta `status` y descarga con `download` (o todo junto con `--wait`).
+8. El monitor del servidor detecta las transiciones —primero `started`, después `done` o
+   `failed`—, actualiza el índice y envía los eventos al proceso de ingreso, que los
+   persiste en SQLite.
+9. El cliente consulta `status` y descarga con `download` (o todo junto con `--wait`).
 
 ## 10. Cumplimiento de requisitos
 
 | Requisito obligatorio | Dónde se cumple |
 |---|---|
 | Sockets, clientes múltiples concurrentes | `server.py` — `asyncio.start_server` sobre TCP, dual-stack IPv4/IPv6 |
-| Mecanismos de IPC | `mp.Queue` entre servidor y `auditor.py` |
+| Mecanismos de IPC | dos `mp.Queue` (pedidos y respuestas) entre servidor e `intake.py` |
 | Asincronismo de I/O | asyncio en el servidor y en el cliente (streams en ambos) |
 | Cola de tareas distribuidas | Celery + Redis, tareas en `tasks.py` |
 | Parseo de argumentos CLI | argparse en `client.py` y `main.py` |
@@ -353,6 +497,6 @@ pueda desplegarse por separado, que es la condición de un sistema distribuido.
 | Adicional | Dónde |
 |---|---|
 | Despliegue en contenedores | `docker-compose.yml` (server, redis, workers, flower) |
-| Base de datos | SQLite, escrita por el auditor |
+| Base de datos | SQLite, escrita por el proceso de ingreso |
 | Celery para tareas en paralelo | workers escalables + `sanitize` encadenado |
 | Entorno visual | Flower, panel web de la cola (sección 4.7, opcional) |

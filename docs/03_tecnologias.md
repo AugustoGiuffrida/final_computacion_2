@@ -294,6 +294,33 @@ que los mensajes se entremezclen.
 Consecuencia práctica: **solo se pueden enviar objetos serializables**. Un diccionario o
 una lista van bien; un socket abierto o una conexión a base de datos, no.
 
+### Proceso o hilo: qué da uno que el otro no
+
+Para sacar trabajo del event loop hay dos caminos, y conviene tener clarísimo en qué se
+diferencian, porque es una pregunta habitual.
+
+**Un hilo alcanza** cuando el trabajo es *esperar*: leer un archivo, consultar una base,
+hablar por red. Esas operaciones liberan el GIL mientras esperan, así que el hilo no
+estorba y es mucho más barato que un proceso — comparte memoria, arranca en
+microsegundos y no requiere serializar nada para comunicarse.
+
+**Un proceso hace falta** por dos motivos, y solo por esos dos:
+
+1. **Paralelismo de cálculo.** Dos hilos no pueden ejecutar código Python a la vez por
+   el GIL; dos procesos sí, porque cada uno tiene su propio intérprete.
+2. **Aislamiento ante fallas.** Un hilo comparte el espacio de memoria del proceso: si
+   algo lo corrompe o lo hace caer, se lleva todo puesto. Un proceso puede morir solo.
+
+Ese segundo punto es el que suele pasarse por alto y el que decide el diseño de esta
+aplicación. Bibliotecas como Pillow y OpenCV son, por dentro, **código nativo en C**.
+Frente a un archivo malformado —accidental o deliberado— pueden provocar una caída del
+intérprete: no una excepción de Python que se pueda atrapar, sino la muerte del proceso.
+
+Por eso, cuando un programa tiene que **procesar contenido que viene de afuera**, hacerlo
+en un proceso separado no es un lujo: es la única forma de que un archivo malicioso no
+derribe todo el servicio. Y el aislamiento solo sirve si alguien **relanza** lo que se
+cayó, así que el proceso principal tiene que supervisar a sus hijos.
+
 ### Por qué `Queue` y no un FIFO
 
 Ambos son válidos y ambos se vieron en clase. La Queue gana en comodidad cuando los dos
@@ -500,7 +527,7 @@ estándar de Python.
 
 Su limitación conocida es la **escritura concurrente**: cuando dos procesos intentan
 escribir a la vez, uno recibe el error *database is locked*. En este proyecto esa
-limitación no aplica, porque un solo proceso (el auditor) escribe en la base.
+limitación no aplica, porque un solo proceso (el proceso de ingreso) escribe en la base.
 
 Por qué SQLite y no PostgreSQL: el volumen de datos es chico, no hay escrituras
 concurrentes y no queremos sumar un servicio más al despliegue. PostgreSQL sería la
@@ -583,7 +610,7 @@ distribuida.
 |---|---|
 | **Sockets TCP** | Comunicar procesos en máquinas distintas, de forma confiable |
 | **asyncio** | Atender muchos clientes a la vez sin un hilo por cliente |
-| **multiprocessing.Queue** | Pasar eventos al proceso auditor sin bloquear el event loop |
+| **multiprocessing.Queue** | Pasar eventos al proceso proceso de ingreso sin bloquear el event loop |
 | **Celery** | Encolar y distribuir trabajo pesado entre procesos independientes |
 | **Redis** | Almacenar la cola de tareas pendientes y el estado de cada una |
 | **SQLite** | Guardar el historial permanente sin administrar un servidor de BD |
