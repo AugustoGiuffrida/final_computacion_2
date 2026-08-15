@@ -696,7 +696,9 @@ en un socket dual-stack y atiende a ambas por el mismo puerto.
 
 **Límites configurables**: tamaño máximo de header (64 KB) y de payload (por defecto
 25 MB). Ambos se verifican **antes** de leer, para que un valor absurdo en el prefijo no
-haga que el servidor intente reservar memoria de más.
+haga que el servidor intente reservar memoria de más. A ellos se suma el tiempo máximo de
+espera de la revisión de ingreso (30 s), pasado el cual el `submit` falla con `INTERNAL`
+en lugar de quedar colgado.
 
 **Desconexión a mitad de un envío**: `readexactly` lanza excepción, la corrutina de ese
 cliente cierra su socket y libera los recursos. No afecta a las demás conexiones.

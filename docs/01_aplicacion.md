@@ -125,10 +125,13 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 ### Servidor
 - Acepta N clientes concurrentes (asyncio, TCP), **escuchando en IPv4 e IPv6 a la vez**
   mediante un socket dual-stack.
-- Valida solicitudes, guarda el original en el almacenamiento compartido, encola en Celery.
+- Valida la **forma** de cada solicitud y guarda el original en el almacenamiento
+  compartido. **Nunca abre la imagen**: para el servidor son bytes.
+- Le pide al proceso de ingreso que la revise y espera su confirmación; solo encola en
+  Celery si la aprobó y no es duplicada.
 - Responde consultas de estado, historial y descargas, resolviendo cada trabajo contra su
   índice en memoria y, si no está ahí, contra SQLite en modo solo lectura.
-- Notifica cada evento al proceso de ingreso por IPC.
+- Notifica los eventos posteriores al proceso de ingreso por IPC, y lo relanza si muere.
 - Apagado limpio ante SIGINT/SIGTERM.
 
 ### Workers Celery
