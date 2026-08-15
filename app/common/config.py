@@ -15,55 +15,38 @@ from typing import Final
 
 # ─────────────────────────────── red ───────────────────────────────
 
-DEFAULT_HOST: Final[str] = "localhost"
-"""Dirección a la que se conecta el cliente si no se indica otra."""
+DEFAULT_HOST: Final[str] = "localhost" #Servidor al que se conecta el cliente si no se indica otro.
 
-DEFAULT_PORT: Final[int] = 9000
-"""Puerto del servidor.
+DEFAULT_PORT: Final[int] = 9000 #Puerto alto a propósito: los menores a 1024 requieren privilegios de root.
 
-Se eligió un puerto alto a propósito: los menores a 1024 están reservados para
-servicios estándar y en Linux requieren privilegios de root.
-"""
-
+# None le dice a asyncio.start_server que escuche en todas las interfaces disponibles,
+# tanto IPv4 como IPv6: es el socket dual-stack.
 LISTEN_ON_ALL_INTERFACES: Final[None] = None
-"""Dirección de escucha del servidor.
-
-`None` le indica a `asyncio.start_server` que escuche en todas las interfaces
-disponibles, tanto IPv4 como IPv6 (socket dual-stack).
-"""
 
 # ────────────────────────── almacenamiento ──────────────────────────
 
-PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
-"""Raíz del repositorio, calculada desde la ubicación de este archivo."""
+PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2] #Raíz del repositorio.
 
-STORAGE_DIR: Final[Path] = PROJECT_ROOT / "storage"
-"""Directorio raíz de los archivos del sistema."""
+STORAGE_DIR: Final[Path] = PROJECT_ROOT / "storage" #Directorio raíz de los archivos.
 
-UPLOADS_DIR: Final[Path] = STORAGE_DIR / "uploads"
-"""Imágenes originales, en un subdirectorio por trabajo."""
+UPLOADS_DIR: Final[Path] = STORAGE_DIR / "uploads" #Originales, en un subdirectorio por trabajo.
 
-RESULTS_DIR: Final[Path] = STORAGE_DIR / "results"
-"""Imágenes procesadas, en un subdirectorio por trabajo."""
+RESULTS_DIR: Final[Path] = STORAGE_DIR / "results" #Procesadas, en un subdirectorio por trabajo.
 
 # ─────────────────────────── imágenes ───────────────────────────
 
+# Validación de conveniencia del cliente, para fallar temprano y sin molestar al
+# servidor. Que el archivo sea realmente una imagen lo verifica el servidor.
 SUPPORTED_EXTENSIONS: Final[frozenset[str]] = frozenset({".jpg", ".jpeg", ".png"})
-"""Extensiones que el cliente acepta enviar.
 
-Es una validación de conveniencia para fallar temprano y sin molestar al servidor.
-Que el archivo sea realmente una imagen se verifica del lado del servidor.
-"""
-
+# Regla de la aplicación. Se mantiene por debajo de protocol.MAX_PAYLOAD_SIZE, que es el
+# techo defensivo del framing.
 DEFAULT_MAX_IMAGE_SIZE: Final[int] = 25 * 1024 * 1024
-"""Peso máximo de una imagen aceptada, en bytes.
-
-Es una regla de la aplicación y debe mantenerse por debajo de
-`protocol.MAX_PAYLOAD_SIZE`, que es el techo defensivo del framing.
-"""
 
 # ─────────────────────────── operaciones ───────────────────────────
 
+# Única fuente de verdad sobre qué se puede pedir: el cliente arma con esto las opciones
+# de su línea de comandos y el servidor valida contra lo mismo.
 OPERATION_PARAMETERS: Final[dict[str, tuple[str, ...]]] = {
     "inspect": (),
     "anonymize": ("mode", "strength"),
@@ -72,26 +55,25 @@ OPERATION_PARAMETERS: Final[dict[str, tuple[str, ...]]] = {
     "compress": ("quality", "max_size"),
     "sanitize": ("mode", "strength", "quality", "max_size"),
 }
-"""Operaciones disponibles y los parámetros que acepta cada una.
 
-Es la única fuente de verdad sobre qué se puede pedir: el cliente arma con esto las
-opciones de su línea de comandos y el servidor valida contra lo mismo.
-"""
+# Todos los parámetros que existen, sin repetir. Se deriva del diccionario de arriba para
+# que agregar uno no obligue a acordarse de tocar una segunda lista.
+ALL_OPERATION_PARAMETERS: Final[tuple[str, ...]] = tuple(
+    dict.fromkeys(
+        parameter
+        for parameters in OPERATION_PARAMETERS.values()
+        for parameter in parameters
+    )
+)
 
-ANONYMIZE_MODES: Final[tuple[str, ...]] = ("blur", "pixelate", "box")
-"""Formas de cubrir una cara detectada."""
+ANONYMIZE_MODES: Final[tuple[str, ...]] = ("blur", "pixelate", "box") #Formas de cubrir una cara.
 
-CONVERT_FORMATS: Final[tuple[str, ...]] = ("webp", "jpeg", "png")
-"""Formatos de salida admitidos por la operación de conversión."""
+CONVERT_FORMATS: Final[tuple[str, ...]] = ("webp", "jpeg", "png") #Formatos de salida de convert.
 
 # ────────────────────────── espera del cliente ──────────────────────────
 
-STATUS_POLL_INTERVAL_SECONDS: Final[float] = 1.0
-"""Cada cuánto vuelve a consultar el estado el cliente en modo `--wait`."""
+STATUS_POLL_INTERVAL_SECONDS: Final[float] = 1.0 #Cada cuánto reconsulta el cliente con --wait.
 
+# Cuánto espera el cliente antes de rendirse. Rendirse no cancela nada: el trabajo sigue
+# su curso y el resultado queda disponible.
 DEFAULT_WAIT_TIMEOUT_SECONDS: Final[int] = 300
-"""Cuánto espera el cliente en modo `--wait` antes de rendirse.
-
-Rendirse no cancela nada: el trabajo sigue su curso en el servidor y el resultado
-queda disponible para consultarlo después con su identificador.
-"""

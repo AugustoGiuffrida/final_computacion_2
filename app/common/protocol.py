@@ -17,6 +17,11 @@ indica cuánto mide el header. Como su tamaño es fijo, siempre se puede leer pr
 ambigüedad. El header, a su vez, declara en 'payload_size' cuántos bytes binarios vienen
 a continuación (0 si no viene ninguno).
 
+Hay dos pares de funciones para enviar y recibir. `send_message` y `receive_payload`
+trabajan en memoria y sirven para mensajes chicos; `send_file` y `stream_payload` van de a
+bloques de CHUNK_SIZE y son las que sostienen los archivos grandes sin que la memoria
+crezca con ellos.
+
 Este módulo no sabe nada de la aplicación: no menciona imágenes, operaciones ni
 identificadores de trabajo. Solo empaqueta y desempaqueta mensajes.
 """
@@ -26,29 +31,21 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Final
 
-LENGTH_PREFIX_SIZE: Final[int] = 4
-"""Cantidad de bytes que ocupa el prefijo de longitud del header."""
+LENGTH_PREFIX_SIZE: Final[int] = 4 #Bytes que ocupa el prefijo de longitud del header.
 
-MAX_HEADER_SIZE: Final[int] = 64 * 1024
-"""Techo defensivo del header, para no reservar memoria ante un prefijo absurdo."""
+MAX_HEADER_SIZE: Final[int] = 64 * 1024 #Techo defensivo, para no reservar memoria ante un prefijo absurdo.
 
-MAX_PAYLOAD_SIZE: Final[int] = 32 * 1024 * 1024
-"""Techo defensivo del payload.
+MAX_PAYLOAD_SIZE: Final[int] = 32 * 1024 * 1024 #Límite del framing, no el de la aplicación.
 
-Es el límite del framing, no el de la aplicación: existe para rechazar un tamaño
-disparatado antes de empezar a leerlo. El límite de negocio —cuánto puede pesar una
-imagen— es más bajo y vive en `config.DEFAULT_MAX_IMAGE_SIZE`.
-"""
+CHUNK_SIZE: Final[int] = 64 * 1024 #Bloque de transferencia, para acotar el uso de memoria.
 
-CHUNK_SIZE: Final[int] = 64 * 1024
-"""Tamaño de bloque al transferir archivos, para acotar el uso de memoria."""
+PAYLOAD_SIZE_FIELD: Final[str] = "payload_size" #Campo donde se declara el tamaño del payload.
 
-PAYLOAD_SIZE_FIELD: Final[str] = "payload_size"
-"""Campo del header donde se declara el tamaño del payload."""
+ProgressCallback = Callable[[int, int], None] #Informa avance: (bytes transferidos, total).
 
 
 class ProtocolError(Exception):
@@ -56,14 +53,10 @@ class ProtocolError(Exception):
 
 
 def pack_header(header: dict[str, Any]) -> bytes:
-    """Serializa un header a JSON y le antepone su longitud.
-
-    Args:
-        header: Campos del mensaje. Se serializan como JSON compacto en UTF-8.
+    """Serializa un header a JSON compacto y le antepone su longitud en 4 bytes.
 
     Returns:
-        Los bytes listos para escribir en el socket: el prefijo de longitud seguido
-        del header serializado.
+        Los bytes listos para escribir en el socket.
 
     Raises:
         ProtocolError: Si el header serializado supera MAX_HEADER_SIZE.
@@ -90,16 +83,8 @@ async def send_message(
 ) -> None:
     """Envía un mensaje completo, con un payload chico o sin payload.
 
-    Para archivos grandes usar `send_file`, que no los carga en memoria.
-
-    Args:
-        writer: Stream de escritura de una conexión ya establecida.
-        header: Campos del mensaje. No se modifica: se envía una copia con el
-            campo 'payload_size' agregado.
-        payload: Contenido binario que acompaña al header. Vacío por defecto.
-
-    Returns:
-        None. Al terminar, el mensaje quedó entregado al sistema operativo.
+    El header no se modifica: se envía una copia con 'payload_size' agregado. Para
+    archivos grandes usar `send_file`, que no los carga en memoria.
 
     Raises:
         ProtocolError: Si el header o el payload superan sus límites.
@@ -116,6 +101,7 @@ async def send_file(
     writer: asyncio.StreamWriter,
     header: dict[str, Any],
     file_path: Path,
+    on_progress: ProgressCallback | None = None,
 ) -> None:
     """Envía un mensaje cuyo payload es un archivo, transmitido en bloques.
 
@@ -124,17 +110,13 @@ async def send_file(
     —evitando que el buffer de salida crezca sin control— y de paso le devuelve el
     control al event loop para que atienda a los demás clientes.
 
-    El tamaño se mide antes de empezar, de modo que el header puede anunciar cuánto
-    va a enviarse.
+    El tamaño se mide antes de empezar, de modo que el header puede anunciar cuánto va a
+    enviarse.
 
     Args:
-        writer: Stream de escritura de una conexión ya establecida.
-        header: Campos del mensaje. No se modifica: se envía una copia con el
-            campo 'payload_size' agregado.
-        file_path: Ruta del archivo cuyo contenido se envía como payload.
-
-    Returns:
-        None. Al terminar, el archivo quedó enviado por completo.
+        on_progress: Se llama después de cada bloque. Informa el avance sin que este
+            módulo sepa quién lo muestra ni cómo. Debe retornar rápido, porque corre
+            dentro del bucle de envío.
 
     Raises:
         ProtocolError: Si el archivo supera MAX_PAYLOAD_SIZE.
@@ -146,10 +128,15 @@ async def send_file(
     writer.write(pack_header({**header, PAYLOAD_SIZE_FIELD: file_size}))
     await writer.drain()
 
+    sent_bytes = 0
     with open(file_path, "rb") as source_file:
         while chunk := source_file.read(CHUNK_SIZE):
             writer.write(chunk)
             await writer.drain()
+
+            sent_bytes += len(chunk)
+            if on_progress is not None:
+                on_progress(sent_bytes, file_size)
 
 
 # ────────────────────────────── recepción ──────────────────────────────
@@ -158,16 +145,14 @@ async def send_file(
 async def receive_header(reader: asyncio.StreamReader) -> dict[str, Any]:
     """Lee el prefijo de longitud y el header que le sigue.
 
-    Args:
-        reader: Stream de lectura de una conexión ya establecida.
+    El límite se verifica antes de leer, para que un prefijo disparatado no llegue a
+    reservar memoria.
 
     Returns:
-        El header deserializado. Siempre incluye 'payload_size' si el emisor
-        respeta el formato; usar `payload_size_of` para leerlo con seguridad.
+        El header deserializado. Usar `payload_size_of` para leer su 'payload_size'.
 
     Raises:
-        ProtocolError: Si el header excede el límite, no es JSON válido o no es
-            un objeto.
+        ProtocolError: Si el header excede el límite, no es JSON válido o no es un objeto.
         asyncio.IncompleteReadError: Si la conexión se cortó antes de completar la
             lectura. Es la forma normal de detectar que el otro extremo se fue.
     """
@@ -186,6 +171,8 @@ async def receive_header(reader: asyncio.StreamReader) -> dict[str, Any]:
     except json.JSONDecodeError as error:
         raise ProtocolError(f"el header no es JSON válido: {error}") from error
 
+    # JSON válido incluye 42, "hola" y [1,2]. El protocolo exige un objeto, y sin este
+    # control el primer header.get() fallaría con un error incomprensible.
     if not isinstance(header, dict):
         raise ProtocolError("el header debe ser un objeto JSON")
 
@@ -197,17 +184,10 @@ async def receive_payload(reader: asyncio.StreamReader, payload_size: int) -> by
 
     Para archivos grandes usar `stream_payload`, que los entrega por partes.
 
-    Args:
-        reader: Stream de lectura de una conexión ya establecida.
-        payload_size: Cantidad exacta de bytes a leer, tomada del header.
-
-    Returns:
-        Los bytes del payload, o `b""` si el tamaño declarado era cero.
-
     Raises:
         ProtocolError: Si el tamaño declarado supera MAX_PAYLOAD_SIZE.
-        asyncio.IncompleteReadError: Si la conexión se cortó antes de completar
-            los bytes anunciados.
+        asyncio.IncompleteReadError: Si la conexión se cortó antes de completar los
+            bytes anunciados.
     """
     validate_payload_size(payload_size)
 
@@ -222,33 +202,29 @@ async def stream_payload(
 ) -> AsyncIterator[bytes]:
     """Entrega el payload por bloques, sin cargarlo entero en memoria.
 
-    Devuelve un generador asíncrono para que sea quien lo consume el que decida qué
-    hacer con cada bloque: escribirlo en disco, calcularle un hash, o ambas cosas.
-    El módulo se limita a leer del socket.
-
-    Uso típico:
+    Es un generador asíncrono para que sea quien lo consume el que decida qué hacer con
+    cada bloque —escribirlo en disco, hashearlo, o ambas—. El módulo se limita a leer del
+    socket:
 
         header = await receive_header(reader)
         with open(destination, "wb") as image_file:
             async for chunk in stream_payload(reader, payload_size_of(header)):
                 image_file.write(chunk)
 
-    Args:
-        reader: Stream de lectura de una conexión ya establecida.
-        payload_size: Cantidad exacta de bytes a leer, tomada del header.
-
     Yields:
-        Bloques de hasta CHUNK_SIZE bytes, en orden. La suma de todos los bloques
-        es exactamente `payload_size`.
+        Bloques de hasta CHUNK_SIZE bytes, en orden. La suma de todos es exactamente
+        `payload_size`.
 
     Raises:
-        ProtocolError: Si el tamaño declarado supera MAX_PAYLOAD_SIZE, o si la
-            conexión se cortó antes de completar los bytes anunciados.
+        ProtocolError: Si el tamaño declarado supera MAX_PAYLOAD_SIZE, o si la conexión
+            se cortó antes de completar los bytes anunciados.
     """
     validate_payload_size(payload_size)
 
     remaining_bytes = payload_size
     while remaining_bytes > 0:
+        # El min() es lo que impide invadir el mensaje siguiente: pedir de más se
+        # llevaría bytes que ya no son de este payload.
         chunk = await reader.read(min(CHUNK_SIZE, remaining_bytes))
 
         if not chunk:
@@ -264,20 +240,18 @@ async def stream_payload(
 
 
 def payload_size_of(header: dict[str, Any]) -> int:
-    """Lee el tamaño de payload declarado en un header, validándolo.
-
-    Args:
-        header: Header ya deserializado por `receive_header`.
+    """Lee el 'payload_size' declarado en un header, validándolo.
 
     Returns:
-        La cantidad de bytes de payload que siguen al header. Cero si el campo no
-        está presente.
+        Los bytes de payload que siguen al header. Cero si el campo no está presente.
 
     Raises:
         ProtocolError: Si el campo no es un entero no negativo.
     """
     declared_size = header.get(PAYLOAD_SIZE_FIELD, 0)
 
+    # El bool se descarta aparte porque en Python es subclase de int: sin esto, un
+    # payload_size de `true` pasaría como si fuera 1.
     if not isinstance(declared_size, int) or isinstance(declared_size, bool):
         raise ProtocolError(f"'{PAYLOAD_SIZE_FIELD}' debe ser un entero")
     if declared_size < 0:
@@ -287,16 +261,7 @@ def payload_size_of(header: dict[str, Any]) -> int:
 
 
 def validate_payload_size(payload_size: int) -> None:
-    """Verifica que un tamaño de payload esté dentro del límite del framing.
-
-    Se llama antes de leer o escribir, para que un valor disparatado no llegue a
-    reservar memoria ni a ocupar el enlace.
-
-    Args:
-        payload_size: Cantidad de bytes que se pretende transferir.
-
-    Returns:
-        None. Si el tamaño es válido, la función simplemente retorna.
+    """Rechaza un payload que supere el techo del framing, antes de leerlo o escribirlo.
 
     Raises:
         ProtocolError: Si el tamaño supera MAX_PAYLOAD_SIZE.
