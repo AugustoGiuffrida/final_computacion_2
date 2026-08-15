@@ -173,28 +173,45 @@ async def send_message(writer: asyncio.StreamWriter, header: dict[str, Any],
 Usar los tipos nativos de Python moderno (`dict[str, Any]`, `list[str]`, `str | None`),
 no los de `typing` salvo cuando haga falta (`Any`, `Callable`, `Protocol`).
 
-### Docstrings obligatorios
+### Docstrings: obligatorios, pero solo lo que aporte
 
-Toda función lleva docstring con: **qué hace**, **qué recibe** (tipo y para qué sirve cada
-parámetro), **qué devuelve** y **qué excepciones lanza** si corresponde. En español,
-estilo Google.
+Toda función lleva docstring en español, estilo Google. **La primera línea —qué hace— es
+obligatoria siempre.** Las secciones `Args:`, `Returns:`, `Raises:` y `Yields:` se agregan
+**solo cuando dicen algo que la firma no dice ya**.
+
+Esta regla se ajustó después de medir el código: más de la mitad de las funciones tenían
+más líneas de docstring que de código, y había que pasar veinte renglones de prosa para
+llegar a seis de lógica. Un docstring que repite la firma no documenta, tapa.
+
+Criterio concreto:
+
+- **`Args:`** — solo para lo que el nombre y el tipo no transmiten: unidades, rangos
+  válidos, qué pasa si es `None`, efectos secundarios, cuándo conviene usar un valor u
+  otro. Si la entrada dice `writer: Stream de escritura`, sobra.
+- **`Returns:`** — solo si el valor necesita explicación: la forma de un diccionario, el
+  significado de cada elemento de una tupla, un caso especial. **Nunca `Returns: None.`**
+- **`Raises:`** — para las excepciones que la función **levanta ella misma**, y para las
+  que propaga cuando quien la llama necesita atraparlas (es el caso de la API pública de
+  `session.py`). No para todo lo que podría pasar por ahí.
+- **El porqué sí va siempre.** Lo que se recorta es la burocracia, no la explicación de
+  una decisión de diseño. Ese es el contenido que sirve para la defensa oral.
+
+Los módulos llevan docstring completo: qué problema resuelven y, cuando aplica, el formato
+de datos con el que trabajan (ver el ejemplo del framing en `protocol.py`). Es lo primero
+que va a leer el profesor.
 
 ```python
 async def send_file(writer: asyncio.StreamWriter, header: dict[str, Any],
-                    path: Path) -> None:
+                    path: Path, on_progress: ProgressCallback | None = None) -> None:
     """Envía un mensaje cuyo payload es un archivo, transmitido en bloques.
 
-    No carga el archivo en memoria: lo lee y lo escribe de a CHUNK_SIZE bytes.
-    El drain() posterior a cada bloque frena al emisor cuando el receptor no da
-    abasto, y de paso le devuelve el control al event loop.
+    No carga el archivo en memoria: lo lee y lo escribe de a CHUNK_SIZE bytes. El
+    drain() posterior a cada bloque frena al emisor cuando el receptor no da abasto,
+    y de paso le devuelve el control al event loop.
 
     Args:
-        writer: Stream de escritura de una conexión ya establecida.
-        header: Campos del mensaje; se le agrega 'payload_size' automáticamente.
-        path: Ruta del archivo cuyo contenido se envía como payload.
-
-    Returns:
-        None. El archivo queda enviado cuando la corrutina termina.
+        on_progress: Se llama después de cada bloque. Debe retornar rápido, porque
+            corre dentro del bucle de envío.
 
     Raises:
         ProtocolError: Si el archivo supera MAX_PAYLOAD.
@@ -202,8 +219,23 @@ async def send_file(writer: asyncio.StreamWriter, header: dict[str, Any],
     """
 ```
 
-Los módulos también llevan docstring: qué problema resuelven y, cuando aplica, el formato
-de datos con el que trabajan (ver el ejemplo del framing en `protocol.py`).
+Notar qué desapareció frente a la versión anterior de este ejemplo: los tres `Args:` que
+repetían la firma y un `Returns: None.` que no decía nada. Quedó lo que un lector no podía
+deducir solo.
+
+### Comentarios de constantes
+
+Las constantes se comentan con `#`, no con docstrings. Si la explicación entra al costado,
+va inline; si no entra en la línea, va en una o más líneas `#` **arriba** de la asignación.
+Nunca un comentario inline que empuje la línea más allá de ~100 caracteres.
+
+```python
+DEFAULT_HOST: Final[str] = "localhost" #Servidor al que se conecta el cliente por defecto.
+
+# None le dice a asyncio.start_server que escuche en todas las interfaces disponibles,
+# tanto IPv4 como IPv6: es el socket dual-stack.
+LISTEN_ON_ALL_INTERFACES: Final[None] = None
+```
 
 ### Nombres explicativos
 
