@@ -1,6 +1,18 @@
 # Dependencias de ejecución.
 #
-# El cliente y el proceso principal del servidor funcionan solo con la biblioteca
-# estándar: argparse y asyncio vienen con Python. Las dependencias externas
-# (Pillow, OpenCV, Celery, Redis) se agregan cuando se implementen los componentes
-# que las necesitan.
+# La lógica de red del cliente y del servidor funciona solo con la biblioteca
+# estándar: argparse y asyncio vienen con Python. Las dependencias externas de
+# procesamiento (Pillow, OpenCV, Celery, Redis) se agregan cuando se implementen
+# los componentes que las necesitan.
+#
+# Las dos de acá abajo son exclusivas de la INTERFAZ del cliente. Ningún módulo
+# de red las importa, de modo que el protocolo sigue siendo independiente de
+# cómo se muestre.
+
+# Salida estilizada del modo directo: tablas, barras de progreso, colores.
+rich==15.0.0
+
+# Interfaz interactiva de pantalla completa. Corre sobre asyncio, así que
+# comparte el event loop con los sockets: la pantalla se sigue repintando
+# mientras una imagen se transfiere en bloques, sin usar hilos.
+textual==8.2.8
