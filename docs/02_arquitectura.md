@@ -250,6 +250,10 @@ Resultado de vuelta (worker → result backend):
 Otra vez rutas y metadatos. El cliente obtiene el archivo por el socket cuando hace
 `download`, nunca a través de Redis.
 
+Notar que la ruta de salida **no llega al cliente**: es interna del sistema. El servidor
+la usa para servir la descarga, pero al responder una consulta de estado la descarta y
+solo informa si hay archivo disponible.
+
 **Condición que esto impone**: la ruta solo sirve si ambos lados ven el mismo sistema de
 archivos, y por eso el volumen está montado en el servidor y en los workers. Es el
 límite de escalabilidad conocido del diseño: para distribuir workers en máquinas sin ese

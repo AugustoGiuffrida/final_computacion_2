@@ -43,7 +43,7 @@
 
   <!-- Clientes → Servidor -->
   <line x1="280" y1="128" x2="280" y2="168" stroke="#1d4ed8" stroke-width="2" marker-end="url(#aTcp)"/>
-  <text x="296" y="146" font-size="11" font-weight="600" fill="#1d4ed8">socket TCP · puerto 9000</text>
+  <text x="296" y="146" font-size="11" font-weight="600" fill="#1d4ed8">socket TCP · puerto 9000 (IPv4/IPv6)</text>
   <text x="296" y="160" font-size="10.5" fill="#64748b">protocolo propio: header JSON + payload binario</text>
 
   <!-- ─────────── Servidor ─────────── -->
@@ -64,7 +64,7 @@
   <rect x="590" y="224" width="250" height="96" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
   <text x="607" y="245" font-size="12.5" font-weight="700" fill="#9a3412">Auditor · proceso hijo</text>
   <text x="607" y="267" font-size="10.5" fill="#c2410c">• único escritor de SQLite</text>
-  <text x="607" y="285" font-size="10.5" fill="#c2410c">• historial y estadísticas</text>
+  <text x="607" y="285" font-size="10.5" fill="#c2410c">• persiste el historial</text>
   <text x="607" y="307" font-size="10" font-style="italic" fill="#ea580c">saca el disco del event loop</text>
 
   <!-- IPC -->

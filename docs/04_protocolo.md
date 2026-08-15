@@ -280,6 +280,12 @@ Estados posibles: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`. Los campos `has_outpu
 `result` aparecen solo cuando el estado es `DONE`: el primero le dice al cliente si tiene
 sentido pedir la descarga, el segundo trae los datos que produjo la operación.
 
+**El servidor no reenvía el resultado del worker tal cual.** Lo que el worker deja en el
+result backend incluye la ruta interna del archivo
+(`/storage/results/<job_id>/out.jpg`), que al cliente no le sirve —no ve ese sistema de
+archivos— y que además expondría la organización interna del servidor. El servidor toma
+de ahí lo que corresponde, lo convierte en `has_output` y descarta la ruta.
+
 ### 4.3 `download` — descargar el resultado
 
 **Pedido**:
@@ -407,8 +413,13 @@ servidor resuelve la descarga por completo con esas dos fuentes más el volumen 
 6. Lee el payload **en bloques de 64 KB y los escribe directamente en el archivo**,
    sin acumular la imagen en memoria. Si la conexión se corta antes de completar
    `payload_size`, `readexactly` lanza excepción y el directorio se descarta.
-7. Verifica que el archivo sea realmente una imagen abriéndolo con Pillow. Si no lo es,
-   responde `INVALID_IMAGE` y borra lo recibido.
+7. Verifica que el archivo sea realmente una imagen abriéndolo con `Image.open()` de
+   Pillow. Si no lo es, responde `INVALID_IMAGE` y borra lo recibido.
+
+   Esto **no contradice** la regla de no hacer trabajo de CPU en el event loop:
+   `Image.open()` es perezoso, lee únicamente la cabecera del archivo para identificar
+   formato y dimensiones, y **no decodifica los píxeles**. Son microsegundos. La
+   decodificación completa —que sí es cara— ocurre en el worker.
 8. Encola la tarea en Celery con `asyncio.to_thread(...)`, para que la llamada
    bloqueante a Redis no frene el event loop.
 9. Envía los eventos `received` y `queued` al auditor por la `mp.Queue`, y agrega el

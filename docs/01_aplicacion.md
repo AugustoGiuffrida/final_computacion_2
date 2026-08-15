@@ -112,7 +112,9 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 - `--action history [--limit N]` → últimos trabajos del usuario.
 - `--wait` en el submit: espera asíncrona y descarga directa al terminar, con
   `--timeout` (300 s por defecto) como límite.
-- Validación local antes de enviar (archivo existe, formato soportado, tamaño máximo).
+- Validación local antes de enviar: que el archivo exista, que el formato esté soportado
+  (JPEG o PNG) y que no supere el tamaño máximo (25 MB por defecto, configurable en el
+  servidor).
 
 ### Servidor
 - Acepta N clientes concurrentes (asyncio, TCP), **escuchando en IPv4 e IPv6 a la vez**
