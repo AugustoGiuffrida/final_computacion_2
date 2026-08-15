@@ -1,8 +1,9 @@
 # Tecnologías utilizadas
 
 Este documento explica **qué es** cada tecnología del proyecto y **por qué se eligió**
-frente a sus alternativas. La descripción de cómo se combinan entre sí está en
-[02_arquitectura.md](02_arquitectura.md).
+frente a sus alternativas. Cómo se combinan entre sí está en
+[02_arquitectura.md](02_arquitectura.md); la especificación del protocolo, en
+[04_protocolo.md](04_protocolo.md).
 
 ---
 
@@ -72,7 +73,7 @@ Lo que **no** hace es conservar la noción de "mensaje". Para TCP la conexión e
 continuo, sin marcas que indiquen dónde termina un envío y empieza el siguiente: lo que
 el emisor manda en tres operaciones puede llegar en una sola lectura, o al revés. Por
 eso toda aplicación sobre TCP necesita definir su propia forma de delimitar mensajes
-(ver el protocolo en [02_arquitectura.md](02_arquitectura.md)).
+(ver [04_protocolo.md](04_protocolo.md)).
 
 ### Por qué TCP y no UDP
 
@@ -83,10 +84,12 @@ opción razonable:
 - **Una imagen no tolera pérdidas.** Si falta un fragmento, el archivo queda corrupto e
   inservible. Muy distinto de una videollamada, donde perder un cuadro se nota apenas y
   no vale la pena retransmitirlo — ese es el terreno de UDP.
-- **Una imagen no entra en un datagrama.** UDP tiene un tamaño máximo de unas decenas de
-  kilobytes por datagrama. Una foto de 3 MB habría que partirla a mano, numerar cada
-  parte, detectar faltantes, volver a pedirlas y reensamblarlas en orden. Eso es,
-  literalmente, lo que TCP ya hace y bien probado.
+- **Una imagen no entra en un datagrama.** El máximo teórico de un datagrama UDP es de
+  **65.507 bytes** de contenido (los 65.535 del campo de longitud menos las cabeceras
+  UDP e IP), y en la práctica conviene quedarse bastante por debajo para evitar la
+  fragmentación IP. Una foto de 3 MB habría que partirla a mano, numerar cada parte,
+  detectar faltantes, volver a pedirlas y reensamblarlas en orden. Eso es, literalmente,
+  lo que TCP ya hace y bien probado.
 
 ### Por qué sockets directos y no HTTP con un framework
 
@@ -156,6 +159,33 @@ De ahí se sigue la regla que gobierna toda la arquitectura: **cualquier trabajo
 dentro del event loop lo congela por completo**. Una corrutina que procese una imagen
 durante cuatro segundos sin ningún `await` deja a todos los clientes esperando, porque
 no existe mecanismo que pueda quitarle el turno.
+
+### La válvula de escape: `asyncio.to_thread`
+
+Si el event loop no tolera nada bloqueante, ¿qué se hace cuando una biblioteca **no
+tiene versión asíncrona**? Es el caso de varias que usamos: encolar en Celery implica una
+llamada de red a Redis que bloquea, y consultar SQLite implica leer del disco.
+
+`asyncio.to_thread(func, *args)` resuelve exactamente eso: ejecuta la función bloqueante
+**en un hilo aparte**, tomado de un pool que asyncio administra, y devuelve el control al
+loop mientras tanto. Desde la corrutina se usa como cualquier otra espera:
+
+```python
+resultado = await asyncio.to_thread(tarea.delay, job_id, ruta, params)
+```
+
+Mientras ese hilo espera a Redis, el loop sigue atendiendo a los demás clientes; cuando
+termina, la corrutina se reanuda con el resultado.
+
+Vale aclarar por qué acá los hilos **sí** sirven, después de haberlos descartado antes. El
+problema del GIL es que impide ejecutar **código Python** en paralelo. Pero una llamada
+bloqueante de red o de disco **libera el GIL mientras espera**, porque la espera ocurre
+dentro del sistema operativo, no en el intérprete. Para trabajo de espera los hilos
+funcionan perfectamente; lo que no dan es paralelismo de cálculo.
+
+De ahí la regla completa del proyecto: **espera con biblioteca asíncrona** → `await`
+directo; **espera con biblioteca bloqueante** → `to_thread`; **cálculo pesado** → otro
+proceso, es decir, los workers.
 
 ### Concurrencia vs. paralelismo
 
@@ -246,15 +276,38 @@ extremos son procesos Python emparentados: serializa sola y es segura ante múlt
 escritores. Un FIFO sería la elección si el otro extremo fuera un programa externo,
 escrito en otro lenguaje o arrancado por separado.
 
-**El límite de la Queue**: funciona porque el proceso hijo se crea con `fork` y hereda
-el objeto, y con él los descriptores del pipe. Un proceso ajeno, que no descienda del
-mismo padre, no puede acceder a ese canal. Por eso la Queue sirve para comunicar
-procesos dentro de una máquina, pero no para hablar con procesos que corren en otro
-contenedor u otra máquina.
+**El límite de la Queue**: funciona porque el proceso hijo **recibe el objeto al
+crearse**, y con él los descriptores del pipe subyacente. Según el sistema, eso ocurre
+por herencia directa (`fork`, el método por defecto en Linux) o transfiriéndolo al
+arrancar el hijo (`spawn`, el de macOS y Windows); en ambos casos la condición es la
+misma: **el canal se entrega en el momento de crear el proceso**. Un proceso ajeno, que
+no fue creado por este padre, no tiene forma de obtenerlo. Por eso la Queue comunica
+procesos dentro de una máquina, pero no sirve para hablar con procesos que corren en
+otro contenedor u otra máquina.
 
 ---
 
 ## 4. Celery y Redis
+
+### Qué es Redis
+
+Un **almacén de datos clave-valor que vive en memoria**. A diferencia de una base de
+datos tradicional, que guarda en disco y lee de ahí, Redis mantiene todo en RAM: por eso
+sus operaciones se miden en microsegundos. Se ejecuta como un servicio aparte, al que los
+programas se conectan por red.
+
+Además de valores simples maneja estructuras de datos —listas, conjuntos, hashes— y es
+justamente la **lista** lo que permite usarlo como cola: un proceso agrega mensajes por un
+extremo y otro los retira por el otro, de forma atómica.
+
+Puede persistir su contenido en disco periódicamente, pero su naturaleza es la de un
+almacén **volátil y rápido**, pensado para datos que tienen sentido *ahora*. Eso lo hace
+ideal para lo que le pedimos —tareas pendientes y estados en curso— y explica por qué el
+historial permanente va a SQLite y no a Redis.
+
+En el proyecto cumple **dos roles distintos** que conviene no confundir: es el *broker*
+(donde esperan las tareas pendientes) y el *result backend* (donde queda el estado y el
+resultado de cada tarea). Son dos usos del mismo servicio, en bases separadas.
 
 ### Qué es Celery
 
@@ -372,6 +425,20 @@ modo que si el worker desaparece el broker se la entrega a otro. El costo es que
 tarea podría ejecutarse dos veces (si el worker muere justo después de terminar pero
 antes de confirmar); es aceptable cuando las operaciones son **idempotentes**.
 
+### Expiración de resultados (`result_expires`)
+
+Los resultados que Celery guarda en el backend **no son permanentes**: por defecto se
+borran a las **24 horas** (`result_expires = 86400`). Es una decisión sensata de Celery,
+porque el backend es un almacén en memoria y sin expiración crecería sin límite.
+
+La consecuencia para el diseño es concreta: **el estado de un trabajo de la semana pasada
+ya no existe en Redis**. Si la descarga de un resultado dependiera de consultar el
+backend, dejaría de funcionar al día siguiente aunque el archivo siguiera en el disco.
+
+Por eso el sistema trata a Redis como estado *vivo* y a SQLite como verdad *permanente*:
+Redis se consulta solo mientras el trabajo está en curso, y todo lo terminado se resuelve
+contra la base de datos.
+
 ### Composición de tareas
 
 - **`chain`**: encadena tareas, cada una recibe la salida de la anterior. Para etapas
@@ -418,7 +485,8 @@ elección si hubiera varios escritores o si el historial creciera a millones de 
 
 ## 6. Pillow y OpenCV
 
-**Pillow** es la biblioteca estándar de manipulación de imágenes en Python: abrir,
+**Pillow** es la biblioteca de facto para manipular imágenes en Python — no forma parte
+de la biblioteca estándar, se instala aparte (`pip install pillow`). Permite abrir,
 redimensionar, aplicar filtros (`GaussianBlur`), guardar con distinto formato y calidad,
 y leer metadatos EXIF (incluido el bloque GPS). Se usa para el difuminado, el borrado de
 metadatos, la conversión y la compresión.
@@ -437,10 +505,30 @@ detector basado en redes neuronales).
 ## 7. Docker y Docker Compose
 
 **Docker** empaqueta una aplicación junto con todas sus dependencias en una imagen que
-corre igual en cualquier máquina. **Docker Compose** describe un conjunto de servicios y
-los levanta con un solo comando.
+corre igual en cualquier máquina. Cada contenedor es un proceso aislado: tiene su propio
+sistema de archivos y su propia vista de la red, y por defecto **no comparte nada** con
+los demás. **Docker Compose** describe un conjunto de servicios y los levanta con un solo
+comando.
 
-Dos razones para usarlo:
+### Volúmenes: cómo se comparten archivos entre contenedores
+
+Ese aislamiento plantea un problema para nuestro diseño: si el servidor guarda una imagen
+en su sistema de archivos, los workers —que corren en otros contenedores— no la ven. Y la
+arquitectura depende de que la vean, porque por la cola viajan rutas y no imágenes.
+
+Un **volumen** es la solución: un directorio que Docker monta dentro de varios
+contenedores a la vez, de modo que todos ven **el mismo sistema de archivos** en esa ruta.
+Lo que el servidor escribe en `/storage/uploads/`, el worker lo lee en la misma ruta,
+aunque sean procesos aislados en contenedores distintos.
+
+El volumen es entonces una pieza estructural, no un detalle de despliegue: es lo que hace
+que una ruta signifique lo mismo en los dos lados. Es también el límite de escalabilidad
+del diseño — para repartir workers en máquinas que no comparten ese volumen habría que
+pasar a almacenamiento en red (NFS) o de objetos (S3).
+
+### Por qué contenedores
+
+Dos razones:
 
 **Reproducibilidad.** OpenCV arrastra dependencias nativas cuya instalación manual es de
 las tareas más propensas a fallar. Dentro de la imagen ya están resueltas.
@@ -477,3 +565,18 @@ distribuida.
 | **Pillow / OpenCV** | Procesar las imágenes (la lógica de la aplicación) |
 | **Docker Compose** | Desplegar y escalar todo el sistema con un comando |
 | **argparse** | Configurar cliente y servidor desde la línea de comandos |
+
+## Las tres formas de esperar, y cuándo usar cada una
+
+Buena parte de las decisiones del proyecto se reducen a una sola pregunta: *¿esto espera
+o calcula?*
+
+| Situación | Herramienta | Dónde aparece |
+|---|---|---|
+| Espera con biblioteca asíncrona | `await` directo | leer y escribir en los sockets |
+| Espera con biblioteca bloqueante | `asyncio.to_thread` | encolar en Celery, leer SQLite |
+| Cálculo pesado | otro proceso | los workers |
+
+Usar la herramienta equivocada en cualquiera de las tres filas rompe el sistema: un
+`await` sobre algo que en realidad calcula congela a todos los clientes, y un proceso por
+cliente conectado sería un derroche para trabajo que es pura espera.
