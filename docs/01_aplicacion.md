@@ -121,7 +121,8 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 
 ### Proceso auditor
 - Recibe eventos por `multiprocessing.Queue`; único escritor de SQLite.
-- Responde consultas de historial/estadísticas reenviadas por el servidor.
+- Es el **único escritor** de la base. El servidor lee de ella por su cuenta, en modo
+  solo lectura, para responder el historial.
 
 ## 8. Alcance y recortes (v1)
 

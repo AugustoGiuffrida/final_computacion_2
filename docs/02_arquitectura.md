@@ -47,12 +47,19 @@ tabla es el resumen de la arquitectura:
 | **multiprocessing.Queue** | servidor → auditor (una dirección) | misma máquina, procesos emparentados | eventos de auditoría |
 | **Redis** | servidor ↔ workers | entre máquinas, procesos sin relación | invocaciones y estados |
 | **Volumen compartido** | servidor ↔ workers | mismo sistema de archivos | los archivos de imagen |
+| **SQLite** | auditor → servidor | mismo sistema de archivos | el historial ya persistido |
 
 La lógica del reparto: los sockets son el único mecanismo que cruza la red hacia
 clientes externos; la Queue es lo más simple y directo entre dos procesos emparentados,
 pero no funciona fuera de la máquina; Redis coordina procesos que ni se conocen; y el
 disco compartido lleva lo que pesa, porque ninguno de los otros canales está pensado
 para megabytes.
+
+La última fila merece una aclaración, porque no es un canal en el sentido habitual: el
+auditor y el servidor **no se hablan** a través de la base, pero como uno escribe y el
+otro lee, la información fluye igual en esa dirección. Es el camino por el que el
+servidor recupera lo que ya no tiene en memoria — el historial, y los trabajos en curso
+después de un reinicio.
 
 ## 4. Componentes
 
@@ -64,8 +71,13 @@ por argumentos de línea de comandos, valida el archivo localmente antes de envi
 conexión con el servidor y ejecuta la acción pedida: enviar una imagen, consultar un
 estado, descargar un resultado o listar el historial.
 
-Con `--wait` mantiene la conexión abierta, consulta el estado periódicamente y descarga
-el resultado apenas está listo.
+Está construido sobre **asyncio** en todas sus operaciones, no solo en la espera: usa los
+mismos *streams* que el servidor para leer y escribir en el socket, de modo que el envío
+y la recepción de archivos grandes nunca bloquean.
+
+Con `--wait` aprovecha una sola conexión para toda la secuencia: envía la imagen,
+consulta el estado periódicamente con `await asyncio.sleep(...)` y descarga el resultado
+apenas está listo.
 
 ### 4.2 Servidor — proceso principal
 
@@ -98,8 +110,8 @@ trabajo de CPU dentro del event loop congelaría a todos los clientes conectados
 Proceso que el servidor lanza al arrancar, conectado por una `multiprocessing.Queue`.
 
 Recibe los eventos que el servidor deposita en la cola —trabajo recibido, encolado,
-terminado, fallado— y los persiste en SQLite. Es el **único proceso que escribe** en la
-base.
+iniciado, terminado, fallado— y los persiste en SQLite. Es el **único proceso que
+escribe** en la base.
 
 Existe por dos razones que se resuelven con una sola decisión. Escribir en disco es una
 operación de espera, y hacerla dentro del event loop congelaría a todos los clientes.
@@ -134,9 +146,24 @@ Una corrutina de fondo dentro del servidor, necesaria por una limitación concre
 workers no pueden avisarle al auditor**. Viven en otros contenedores, y la
 `multiprocessing.Queue` solo comunica procesos emparentados de la misma máquina.
 
-El monitor mantiene la lista de los trabajos en vuelo y consulta periódicamente su
-estado en el result backend. Cuando detecta que uno terminó, envía el evento
-correspondiente al auditor y lo saca de la lista.
+El monitor mantiene la lista de los trabajos en vuelo y consulta periódicamente su estado
+en el result backend. Detecta **dos transiciones**: cuando un worker toma el trabajo
+(evento `started`, que es lo que permite informar `PROCESSING`) y cuando termina (`done`
+o `failed`). En ambos casos envía el evento al auditor y actualiza el índice en memoria;
+al terminar, además, saca el trabajo de la lista de vigilancia.
+
+#### Recuperación al reiniciar el servidor
+
+El índice en memoria es volátil: si el servidor se reinicia, se olvida de los trabajos que
+estaba vigilando. Pero esos trabajos **siguen ejecutándose**, porque los workers son
+procesos independientes que no se enteran de la caída — que es justamente la propiedad
+que buscábamos al desacoplarlos.
+
+El problema sería que nadie detecte su finalización, y quedarían marcados como
+`PROCESSING` para siempre en el historial. Por eso, **al arrancar, el servidor consulta
+SQLite y carga los trabajos en estado no terminal** de vuelta en el índice y en la lista
+del monitor. La vigilancia se retoma donde había quedado, y los trabajos que terminaron
+durante la caída se resuelven en la primera consulta.
 
 ### 4.6 Almacenamiento
 
@@ -152,6 +179,22 @@ Tres lugares, tres roles:
 
 Cada dato en el lugar que le corresponde: archivos pesados al disco, estado transitorio
 a Redis, historia a la base de datos.
+
+A esos tres se suma el **índice en memoria del servidor** (sección 4.2), que no es
+almacenamiento sino una caché: guarda los trabajos de la ejecución en curso para poder
+responder sin esperar al auditor ni ir al disco. Se pierde al reiniciar, y se reconstruye
+desde SQLite.
+
+### 4.7 Flower (opcional)
+
+Panel web que viene con Celery y se levanta como un servicio más del `docker-compose`.
+Muestra en tiempo real los workers conectados, las tareas en curso, las completadas y las
+fallidas, con sus tiempos de ejecución.
+
+No requiere escribir código: se conecta al mismo broker que el resto del sistema y lee de
+ahí. Cumple el requisito opcional de entorno visual y, sobre todo, hace **observable** el
+comportamiento de la cola durante la demostración — se ve cómo se reparten las tareas
+entre workers al escalarlos, y cómo una tarea se reintenta cuando un worker muere.
 
 ## 5. Protocolo cliente-servidor (resumen)
 
@@ -253,13 +296,15 @@ final_comp2/
 │   ├── client/
 │   │   └── client.py        # argparse + asyncio streams; una función por acción
 │   ├── server/
-│   │   ├── main.py          # argparse, arranque: lanza auditor, instala manejo de
-│   │   │                    #   señales, inicia el event loop
+│   │   ├── main.py          # argparse, arranque: lanza auditor, recupera trabajos
+│   │   │                    #   en curso, instala manejo de señales, inicia el loop
 │   │   ├── server.py        # asyncio.start_server + un handler por tipo de mensaje
+│   │   ├── registry.py      # resolución de trabajos: índice en memoria + lecturas
+│   │   │                    #   a SQLite (solo lectura)
 │   │   ├── jobs.py          # puente con Celery: encolar, consultar estado,
 │   │   │                    #   corrutina de monitoreo de trabajos en vuelo
-│   │   └── auditor.py       # proceso hijo: bucle sobre mp.Queue, escritura SQLite,
-│   │                        #   consultas de historial
+│   │   └── auditor.py       # proceso hijo: bucle sobre mp.Queue y escritura SQLite
+│   │                        #   (único escritor de la base)
 │   └── worker/
 │       ├── celery_app.py    # instancia y configuración de Celery
 │       └── tasks.py         # tareas Pillow/OpenCV, una por operación + sanitize
@@ -281,12 +326,13 @@ pueda desplegarse por separado, que es la condición de un sistema distribuido.
    y guarda el original en `storage/uploads/<job_id>/`.
 4. Encola la tarea en Celery: queda un mensaje chico en Redis con la ruta y los
    parámetros.
-5. Notifica `received` + `queued` al auditor por la `mp.Queue` y responde el `job_id`
-   al cliente. **Hasta acá, milisegundos.**
+5. Registra el trabajo en su **índice en memoria**, notifica `received` + `queued` al
+   auditor por la `mp.Queue` y responde el `job_id` al cliente. **Hasta acá,
+   milisegundos.**
 6. Un worker toma la tarea, lee la imagen del volumen, la procesa, escribe el resultado
    en `storage/results/<job_id>/` y reporta al result backend.
-7. El monitor del servidor detecta el final y avisa al auditor, que lo persiste en
-   SQLite.
+7. El monitor del servidor detecta las transiciones —primero `started`, después `done` o
+   `failed`—, actualiza el índice y avisa al auditor, que las persiste en SQLite.
 8. El cliente consulta `status` y descarga con `download` (o todo junto con `--wait`).
 
 ## 10. Cumplimiento de requisitos
@@ -295,7 +341,7 @@ pueda desplegarse por separado, que es la condición de un sistema distribuido.
 |---|---|
 | Sockets, clientes múltiples concurrentes | `server.py` — `asyncio.start_server` sobre TCP |
 | Mecanismos de IPC | `mp.Queue` entre servidor y `auditor.py` |
-| Asincronismo de I/O | asyncio en el servidor y en el cliente (`--wait`) |
+| Asincronismo de I/O | asyncio en el servidor y en el cliente (streams en ambos) |
 | Cola de tareas distribuidas | Celery + Redis, tareas en `tasks.py` |
 | Parseo de argumentos CLI | argparse en `client.py` y `main.py` |
 
@@ -304,4 +350,4 @@ pueda desplegarse por separado, que es la condición de un sistema distribuido.
 | Despliegue en contenedores | `docker-compose.yml` (server, redis, workers, flower) |
 | Base de datos | SQLite, escrita por el auditor |
 | Celery para tareas en paralelo | workers escalables + `sanitize` encadenado |
-| Entorno visual | Flower, panel web de la cola (opcional) |
+| Entorno visual | Flower, panel web de la cola (sección 4.7, opcional) |
