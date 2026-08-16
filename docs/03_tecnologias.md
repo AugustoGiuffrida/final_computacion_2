@@ -121,13 +121,26 @@ opción razonable:
 HTTP no es una alternativa *a* los sockets: HTTP **corre sobre** sockets TCP. Un
 framework web no eliminaría esta capa, solo la escondería.
 
-Trabajar directamente con sockets nos da tres cosas: definimos un protocolo ajustado a
-lo que necesitamos; la imagen viaja **tal cual es**, sin transformaciones (por HTTP
-habría que usar `multipart/form-data` o base64, que la infla un 33%); y es el contenido
-central de la materia.
+Trabajar directamente con sockets nos da dos cosas: definimos un protocolo ajustado a lo
+que necesitamos, y es el contenido central de la materia. Un framework resolvería la
+transferencia sin que escribiéramos una línea, pero entonces estaríamos demostrando el
+manejo de una biblioteca y no el de la API de sockets, que es lo que la materia evalúa.
 
-El costo es la interoperabilidad: solo nuestro cliente puede hablar con nuestro
-servidor, un navegador no. Como el cliente también es parte del proyecto, no nos afecta.
+Conviene además reconocer el parentesco, porque es la mejor forma de explicar nuestro
+protocolo: **es un HTTP en miniatura**. La cabecera `Content-Length` de HTTP cumple
+exactamente la función de nuestro prefijo de longitud —anunciar cuántos bytes de cuerpo
+vienen después— y por el mismo motivo: TCP entrega un flujo continuo y alguien tiene que
+declarar dónde termina cada mensaje. No inventamos un mecanismo raro; reimplementamos, en
+unas sesenta líneas, el que usa HTTP.
+
+Sobre el tamaño de lo transmitido no hay diferencia apreciable: `multipart/form-data`
+transporta los bytes **tal cual**, separados por una marca de frontera, con un sobrecosto
+de unos pocos cientos de bytes. El +33% es de **base64**, que haría falta solo si la
+imagen viajara dentro de un JSON.
+
+El costo real es la interoperabilidad: solo nuestro cliente puede hablar con nuestro
+servidor, un navegador no, y no se puede probar con `curl`. Como el cliente también es
+parte del proyecto, lo asumimos.
 
 ---
 
