@@ -355,7 +355,7 @@ async def test_a_cut_download_leaves_no_partial_file(tmp_path: Path) -> None:
 
     destination = tmp_path / "truncado.jpg"
 
-    with pytest.raises(protocol.ProtocolError, match="se cortó"):
+    with pytest.raises(asyncio.IncompleteReadError):
         await client_session.download("a3f7b2c1", destination)
 
     assert not destination.exists()

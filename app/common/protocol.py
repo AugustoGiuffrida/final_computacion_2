@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any, Final
 
@@ -51,6 +51,37 @@ class ProtocolError(Exception):
     """El otro extremo envió algo que no respeta el formato de mensaje."""
 
 
+# ─────────────────────── el prefijo de longitud ───────────────────────
+
+
+def encode_length(length: int) -> bytes:
+    """Codifica una longitud en el prefijo de 4 bytes que precede a cada header.
+
+    Se usa big-endian —el byte más significativo primero— porque es el orden de red
+    convencional: el mismo que usan las cabeceras de IP y de TCP. Fijarlo explícitamente
+    hace que dos máquinas con distinta arquitectura se entiendan igual.
+
+    Returns:
+        Los cuatro bytes del prefijo, listos para anteponer al header.
+    """
+    return length.to_bytes(LENGTH_PREFIX_SIZE, "big")
+
+
+def decode_length(raw_prefix: bytes) -> int:
+    """Interpreta el prefijo de 4 bytes que precede a cada header.
+
+    Args:
+        raw_prefix: Los cuatro bytes leídos al principio de un mensaje.
+
+    Returns:
+        Cuántos bytes ocupa el header que viene a continuación.
+    """
+    return int.from_bytes(raw_prefix, "big")
+
+
+# ─────────────────────────── armado del mensaje ───────────────────────────
+
+
 def pack_header(header: dict[str, Any]) -> bytes:
     """Serializa un header a JSON compacto y le antepone su longitud en 4 bytes.
 
@@ -68,11 +99,31 @@ def pack_header(header: dict[str, Any]) -> bytes:
             f"el header ocupa {len(serialized_header)} bytes y el máximo es {MAX_HEADER_SIZE}"
         )
 
-    length_prefix = len(serialized_header).to_bytes(LENGTH_PREFIX_SIZE, "big")
-    return length_prefix + serialized_header
+    return encode_length(len(serialized_header)) + serialized_header
 
 
 # ──────────────────────────────── envío ────────────────────────────────
+
+
+def read_in_chunks(file_path: Path) -> Iterator[bytes]:
+    """Recorre un archivo devolviéndolo de a bloques, sin cargarlo entero en memoria.
+
+    Está separado del envío para que cada función tenga una sola idea: esta sabe leer un
+    archivo por partes y no sabe nada de sockets; `send_file` sabe mandar por un socket y
+    no sabe de dónde salen los bloques.
+
+    Yields:
+        Bloques de hasta CHUNK_SIZE bytes, en orden. El último puede ser más chico.
+
+    Raises:
+        OSError: Si el archivo no existe o no se puede leer.
+    """
+    with open(file_path, "rb") as source_file:
+        while True:
+            chunk = source_file.read(CHUNK_SIZE)
+            if not chunk:  # read() devuelve b"" al llegar al final del archivo
+                return
+            yield chunk
 
 
 async def send_message(
@@ -94,7 +145,8 @@ async def send_message(
     header_with_size = dict(header)
     header_with_size[PAYLOAD_SIZE_FIELD] = len(payload)
 
-    writer.write(pack_header(header_with_size))
+    framed_header = pack_header(header_with_size)
+    writer.write(framed_header)
     if payload:
         writer.write(payload)
     await writer.drain()
@@ -132,22 +184,18 @@ async def send_file(
     header_with_size = dict(header)
     header_with_size[PAYLOAD_SIZE_FIELD] = file_size
 
-    writer.write(pack_header(header_with_size))
+    framed_header = pack_header(header_with_size)
+    writer.write(framed_header)
     await writer.drain()
 
     sent_bytes = 0
-    with open(file_path, "rb") as source_file:
-        while True:
-            chunk = source_file.read(CHUNK_SIZE)
-            if not chunk:  # read() devuelve b"" al llegar al final del archivo
-                break
+    for chunk in read_in_chunks(file_path):
+        writer.write(chunk)
+        await writer.drain()
 
-            writer.write(chunk)
-            await writer.drain()
-
-            sent_bytes += len(chunk)
-            if on_progress is not None:
-                on_progress(sent_bytes, file_size)
+        sent_bytes += len(chunk)
+        if on_progress is not None:
+            on_progress(sent_bytes, file_size)
 
 
 # ────────────────────────────── recepción ──────────────────────────────
@@ -168,7 +216,7 @@ async def receive_header(reader: asyncio.StreamReader) -> dict[str, Any]:
             lectura. Es la forma normal de detectar que el otro extremo se fue.
     """
     length_prefix = await reader.readexactly(LENGTH_PREFIX_SIZE)
-    header_size = int.from_bytes(length_prefix, "big")
+    header_size = decode_length(length_prefix)
 
     if header_size > MAX_HEADER_SIZE:
         raise ProtocolError(
@@ -227,8 +275,9 @@ async def stream_payload(
         `payload_size`.
 
     Raises:
-        ProtocolError: Si el tamaño declarado supera MAX_PAYLOAD_SIZE, o si la conexión
-            se cortó antes de completar los bytes anunciados.
+        ProtocolError: Si el tamaño declarado supera MAX_PAYLOAD_SIZE.
+        asyncio.IncompleteReadError: Si la conexión se cortó antes de completar los bytes
+            anunciados. Es el mismo error que informa `receive_header` en ese caso.
     """
     validate_payload_size(payload_size)
 
@@ -236,15 +285,13 @@ async def stream_payload(
     while remaining_bytes > 0:
         # El min() es lo que impide invadir el mensaje siguiente: pedir de más se
         # llevaría bytes que ya no son de este payload.
-        chunk = await reader.read(min(CHUNK_SIZE, remaining_bytes))
+        block_size = min(CHUNK_SIZE, remaining_bytes)
 
-        if not chunk:
-            raise ProtocolError(
-                f"la transferencia se cortó: faltaban {remaining_bytes} de {payload_size} bytes"
-            )
+        # readexactly devuelve esa cantidad exacta o lanza excepción, así que no hace
+        # falta contar lo que efectivamente llegó ni detectar el corte a mano.
+        yield await reader.readexactly(block_size)
 
-        remaining_bytes -= len(chunk)
-        yield chunk
+        remaining_bytes -= block_size
 
 
 # ─────────────────────────────── auxiliares ───────────────────────────────

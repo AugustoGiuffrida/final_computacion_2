@@ -114,7 +114,11 @@ async def test_a_file_larger_than_the_chunk_arrives_complete(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_a_cut_in_the_middle_of_the_payload_is_reported() -> None:
-    """Si la conexión se corta a mitad del payload, la lectura falla en vez de mentir."""
+    """Si la conexión se corta a mitad del payload, la lectura falla en vez de mentir.
+
+    El error es el mismo que informa `receive_header` ante un corte: `readexactly` no
+    devuelve nunca menos de lo pedido, así que la interrupción se detecta sola.
+    """
     client_reader, client_writer, server_reader, server_writer, server = await open_connected_pair()
 
     # Anuncia diez bytes pero envía tres y cierra.
@@ -125,7 +129,7 @@ async def test_a_cut_in_the_middle_of_the_payload_is_reported() -> None:
 
     header = await protocol.receive_header(server_reader)
 
-    with pytest.raises(protocol.ProtocolError, match="se cortó"):
+    with pytest.raises(asyncio.IncompleteReadError):
         async for _ in protocol.stream_payload(server_reader, protocol.payload_size_of(header)):
             pass
 

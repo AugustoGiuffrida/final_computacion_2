@@ -233,8 +233,9 @@ class ClientSession:
             messages.ServerError: `NOT_READY` si el trabajo no terminó, `NO_OUTPUT` si la
                 operación no genera archivo (el caso de `inspect`), `JOB_NOT_FOUND` o
                 `FORBIDDEN`.
-            protocol.ProtocolError: Si la transferencia se corta. El archivo parcial se
-                borra antes de propagar el error.
+            asyncio.IncompleteReadError: Si la transferencia se corta antes de completar
+                los bytes anunciados. El archivo parcial se borra antes de propagar el
+                error: uno truncado es peor que ninguno, porque parece una imagen y no lo es.
         """
         request = {
             messages.TYPE_FIELD: messages.DOWNLOAD,
