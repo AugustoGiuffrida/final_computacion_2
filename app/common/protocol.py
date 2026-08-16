@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Final
@@ -91,7 +90,11 @@ async def send_message(
     """
     validate_payload_size(len(payload))
 
-    writer.write(pack_header({**header, PAYLOAD_SIZE_FIELD: len(payload)}))
+    # Se copia el header para no modificar el que pasó quien llama.
+    header_with_size = dict(header)
+    header_with_size[PAYLOAD_SIZE_FIELD] = len(payload)
+
+    writer.write(pack_header(header_with_size))
     if payload:
         writer.write(payload)
     await writer.drain()
@@ -122,15 +125,23 @@ async def send_file(
         ProtocolError: Si el archivo supera MAX_PAYLOAD_SIZE.
         OSError: Si el archivo no existe o no se puede leer.
     """
-    file_size = os.path.getsize(file_path)
+    file_size = file_path.stat().st_size
     validate_payload_size(file_size)
 
-    writer.write(pack_header({**header, PAYLOAD_SIZE_FIELD: file_size}))
+    # Se copia el header para no modificar el que pasó quien llama.
+    header_with_size = dict(header)
+    header_with_size[PAYLOAD_SIZE_FIELD] = file_size
+
+    writer.write(pack_header(header_with_size))
     await writer.drain()
 
     sent_bytes = 0
     with open(file_path, "rb") as source_file:
-        while chunk := source_file.read(CHUNK_SIZE):
+        while True:
+            chunk = source_file.read(CHUNK_SIZE)
+            if not chunk:  # read() devuelve b"" al llegar al final del archivo
+                break
+
             writer.write(chunk)
             await writer.drain()
 

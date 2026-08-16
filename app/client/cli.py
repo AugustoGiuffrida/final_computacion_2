@@ -268,8 +268,11 @@ def collect_operation_parameters(
     accepted = config.OPERATION_PARAMETERS[operation]
     parameters: dict[str, Any] = {}
 
+    # vars() convierte el Namespace de argparse en un diccionario común.
+    argument_values = vars(arguments)
+
     for parameter_name in config.ALL_OPERATION_PARAMETERS:
-        value = getattr(arguments, parameter_name, None)
+        value = argument_values.get(parameter_name)
         if value is None:
             continue
 

@@ -121,11 +121,12 @@ async def upload_image(
 
     with build_transfer_progress(console) as progress:
         upload = progress.add_task(f"Enviando {image_path.name}", total=file_size)
+
+        def show_progress(sent_bytes: int, _total: int) -> None:
+            progress.update(upload, completed=sent_bytes)
+
         response = await client_session.submit(
-            image_path,
-            operation,
-            parameters,
-            on_progress=lambda sent, _total: progress.update(upload, completed=sent),
+            image_path, operation, parameters, on_progress=show_progress
         )
 
     console.print(render_submit_receipt(response, image_path, operation, file_size))
@@ -204,18 +205,16 @@ async def wait_showing_progress(
         transient=True,
     ) as progress:
         waiting = progress.add_task("En cola…", total=None)
-        observed_status = ""
 
-        def show(response: dict[str, Any], _elapsed: float) -> None:
-            nonlocal observed_status
-            observed_status = response.get("status", "")
-            progress.update(
-                waiting, description=WAITING_DESCRIPTIONS.get(observed_status, observed_status)
-            )
+        def show_status(response: dict[str, Any], _elapsed: float) -> None:
+            status = response.get("status", "")
+            progress.update(waiting, description=WAITING_DESCRIPTIONS.get(status, status))
 
-        await client_session.wait_until_finished(job_id, timeout, on_poll=show)
+        final_response = await client_session.wait_until_finished(
+            job_id, timeout, on_poll=show_status
+        )
 
-    return observed_status
+    return final_response.get("status", "")
 
 
 def render_submit_receipt(
