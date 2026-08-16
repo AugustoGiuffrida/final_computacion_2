@@ -179,18 +179,17 @@ def test_the_defaults_come_from_the_configuration() -> None:
     """Sin host ni puerto se usan los del módulo de configuración, no números sueltos."""
     from app.common import config
 
-    arguments = parse("--user", "augusto")
+    arguments = parse("--user", "augusto", "--action", "history")
 
     assert arguments.host == config.DEFAULT_HOST
     assert arguments.port == config.DEFAULT_PORT
     assert arguments.timeout == config.DEFAULT_WAIT_TIMEOUT_SECONDS
 
 
-def test_without_an_action_the_interactive_interface_is_chosen() -> None:
-    """Sin `--action`, el cliente abre la interfaz interactiva."""
-    arguments = parse("--user", "augusto")
-
-    assert arguments.action is None
+def test_the_action_is_mandatory() -> None:
+    """Sin `--action` no hay nada que hacer: el cliente ejecuta una acción y termina."""
+    with pytest.raises(SystemExit):
+        parse("--user", "augusto")
 
 
 def test_the_user_is_mandatory() -> None:

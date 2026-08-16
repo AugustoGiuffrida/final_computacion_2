@@ -1,14 +1,11 @@
 """Línea de comandos del cliente: define los argumentos y decide qué hacer con ellos.
 
-Es la puerta de entrada única del cliente, y de ahí salen dos caminos:
+Es la puerta de entrada del cliente: parsea la línea de comandos, verifica las reglas que
+`argparse` no puede expresar, ejecuta la acción pedida y traduce cualquier fallo esperable
+en un mensaje legible y un código de salida.
 
-- Con `--action`, el **modo directo**: ejecuta una acción, la muestra con formato y
-  termina. Es el modo scriptable, el que se puede encadenar en un pipe.
-- Sin `--action`, la **interfaz interactiva**: abre una aplicación de pantalla completa
-  que se maneja con el teclado.
-
-Los dos usan la misma `ClientSession`, así que hablan exactamente el mismo protocolo. La
-diferencia es solamente cómo se muestran las cosas.
+La conversación con el servidor la resuelve `session.ClientSession` y la presentación
+`console`; este módulo no hace ninguna de las dos cosas.
 
 `argparse` no puede expresar que `--file` es obligatorio *solo* cuando la acción es
 `submit`, así que esas reglas se verifican después de parsear y se informan con
@@ -20,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import errno
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +34,6 @@ EXIT_BAD_USAGE = 2 #La línea de comandos está mal armada. Es la convención de
 EXIT_INTERRUPTED = 130 #El usuario cortó con Ctrl+C. Es la convención de los shells de Unix.
 
 USAGE_EXAMPLES = """Ejemplos:
-  %(prog)s --user augusto
-      abre la interfaz interactiva
-
   %(prog)s --user augusto --action submit --file foto.jpg --op inspect
       audita qué revela una foto, sin modificarla
 
@@ -55,10 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Arma el parser completo, un grupo de argumentos por vez."""
     parser = argparse.ArgumentParser(
         prog="python -m app.client",
-        description=(
-            "Cliente del servicio de anonimización y sanitización de imágenes. "
-            "Sin --action abre la interfaz interactiva."
-        ),
+        description="Cliente del servicio de anonimización y sanitización de imágenes.",
         epilog=USAGE_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -90,15 +80,10 @@ def add_identity_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def add_action_arguments(parser: argparse.ArgumentParser) -> None:
-    """Agrega la elección entre el modo directo y la interfaz interactiva."""
+    """Agrega la elección de qué acción ejecutar."""
     group = parser.add_argument_group("acción")
     group.add_argument(
-        "--action", choices=ACTIONS,
-        help="qué hacer; si se omite, se abre la interfaz interactiva",
-    )
-    group.add_argument(
-        "--tui", action="store_true",
-        help="abrir la interfaz interactiva de forma explícita",
+        "--action", choices=ACTIONS, required=True, help="qué hacer",
     )
 
 
@@ -291,21 +276,6 @@ def collect_operation_parameters(
 # ──────────────────────────────── ejecución ────────────────────────────────
 
 
-def is_connection_refused(error: OSError) -> bool:
-    """Reconoce si un error de red significa que nadie está escuchando del otro lado.
-
-    No alcanza con `isinstance(error, ConnectionRefusedError)`. Cuando el nombre resuelve a
-    varias direcciones —lo habitual con `localhost`, que da `::1` por IPv6 y `127.0.0.1`
-    por IPv4— asyncio intenta con todas y, si fallan todas, junta los errores en un único
-    `OSError` genérico cuyo texto los enumera.
-    """
-    if isinstance(error, ConnectionRefusedError):
-        return True
-    if error.errno == errno.ECONNREFUSED:
-        return True
-    return "Connect call failed" in str(error) or "Connection refused" in str(error)
-
-
 async def run_direct_action(
     arguments: argparse.Namespace, parameters: dict[str, Any]
 ) -> int:
@@ -329,19 +299,6 @@ async def run_direct_action(
                 client, output, arguments.job_id, arguments.output
             )
         return await console_mode.run_history(client, output, arguments.limit)
-
-
-def run_interactive_interface(arguments: argparse.Namespace) -> int:
-    """Abre la interfaz interactiva de pantalla completa.
-
-    Textual se importa acá adentro a propósito: el modo directo no lo necesita y así no
-    paga el costo de cargarlo, ni deja de funcionar si esa dependencia no está instalada.
-    """
-    from app.client.tui import ImageClientApp
-
-    application = ImageClientApp(arguments.host, arguments.port, arguments.user)
-    application.run()
-    return EXIT_OK
 
 
 def report_failure(
@@ -368,14 +325,10 @@ def report_failure(
         )
     elif isinstance(error, protocol.ProtocolError):
         console_mode.print_error(errors, "Respuesta mal formada", str(error))
-    elif isinstance(error, OSError) and is_connection_refused(error):
-        console_mode.print_error(
-            errors, "No se pudo conectar", f"No hay nadie escuchando en {target}.",
-            "Verificá que el servidor esté levantado y que el puerto sea el correcto.",
-        )
     elif isinstance(error, OSError):
         console_mode.print_error(
-            errors, "Problema de red", str(error), f"No se pudo hablar con {target}."
+            errors, f"No se pudo hablar con {target}", str(error),
+            "Verificá que el servidor esté levantado y que el host y el puerto sean los correctos.",
         )
     else:  # KeyboardInterrupt
         errors.print("\n[yellow]Interrumpido.[/yellow] Los trabajos ya enviados siguen su curso.")
@@ -396,10 +349,6 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = build_parser()
     arguments = parser.parse_args(argv)
-
-    if arguments.action is None or arguments.tui:
-        return run_interactive_interface(arguments)
-
     check_action_requirements(parser, arguments)
 
     parameters: dict[str, Any] = {}

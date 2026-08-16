@@ -5,14 +5,9 @@
 # procesamiento (Pillow, OpenCV, Celery, Redis) se agregan cuando se implementen
 # los componentes que las necesitan.
 #
-# Las dos de acá abajo son exclusivas de la INTERFAZ del cliente. Ningún módulo
-# de red las importa, de modo que el protocolo sigue siendo independiente de
-# cómo se muestre.
+# La de acá abajo es exclusiva de la PRESENTACIÓN del cliente. Ningún módulo de
+# red la importa, de modo que la capa de protocolo sigue siendo independiente de
+# cómo se muestren las cosas.
 
-# Salida estilizada del modo directo: tablas, barras de progreso, colores.
+# Salida con formato: tablas del historial, barras de progreso, colores.
 rich==15.0.0
-
-# Interfaz interactiva de pantalla completa. Corre sobre asyncio, así que
-# comparte el event loop con los sockets: la pantalla se sigue repintando
-# mientras una imagen se transfiere en bloques, sin usar hilos.
-textual==8.2.8

@@ -1,13 +1,11 @@
-"""Modo directo: ejecuta una acción, la muestra con formato y termina.
-
-Es el modo que se usa desde un script o desde la terminal de siempre —
-`--action submit --file foto.jpg --op sanitize`— y el que hace que el cliente siga siendo
-una herramienta de línea de comandos y no solo una aplicación interactiva.
+"""Presentación del cliente: muestra por pantalla el resultado de cada acción.
 
 Todo lo que hay acá es presentación. La conversación con el servidor la resuelve
 `session.ClientSession`; estas funciones se limitan a llamar sus métodos y a mostrar lo
-que devuelven. Esa división es la que permite que la interfaz interactiva de `tui.py` haga
-lo mismo con otra cara.
+que devuelven.
+
+Mantener la presentación separada de la red es lo que permite probar cada una por su
+lado: la sesión se prueba sin mirar ninguna salida, y estas funciones sin abrir un socket.
 """
 
 from __future__ import annotations

@@ -1,22 +1,16 @@
 """Capa de red del cliente: la conexión con el servidor y un método por cada pedido.
 
 Este módulo **no imprime nada y no sabe nada de cómo se ve el cliente**. Recibe datos,
-habla por el socket y devuelve datos. Esa restricción es deliberada y es lo que permite
-que el modo directo y la interfaz interactiva sean dos caras del mismo cliente en vez de
-dos clientes distintos: los dos usan estos mismos métodos y cada uno decide cómo mostrar
-el resultado.
+habla por el socket y devuelve datos. Esa restricción es deliberada: deja la presentación
+del lado de quien llama, y permite probar la conversación con el servidor sin mirar
+ninguna salida.
 
-Para informar el avance de una transferencia o el ir y venir de mensajes, la sesión llama
-funciones que le pasan desde afuera (`on_progress`, `on_frame`). Nunca al revés: nada de
-acá adentro conoce a Rich ni a Textual.
+Para informar el avance de una transferencia, la sesión llama una función que le pasan
+desde afuera (`on_progress`). Nunca al revés: nada de acá adentro sabe quién muestra ese
+avance ni cómo.
 
-Sobre el diálogo, dos reglas del protocolo que este módulo hace cumplir:
-
-- **Una conexión por ejecución**, que transporta todos los pedidos que hagan falta.
-- **Un pedido por vez**, garantizado con un candado. Sin él, dos acciones disparadas
-  juntas desde la interfaz escribirían en el mismo socket a la vez y cada una leería la
-  respuesta de la otra: como el protocolo no numera los pedidos, nada permitiría
-  detectarlo.
+Hace cumplir además una regla del protocolo: **una conexión por ejecución**, que
+transporta todos los pedidos que hagan falta.
 """
 
 from __future__ import annotations
@@ -24,17 +18,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Final
+from typing import Any
 
 from app.client import formatting
 from app.common import config, messages, protocol
-
-SENT: Final[str] = "sent" #Dirección de un frame que sale hacia el servidor.
-
-RECEIVED: Final[str] = "received" #Dirección de un frame que llega desde el servidor.
-
-FrameCallback = Callable[[str, dict[str, Any]], None] #Observa cada mensaje: (dirección, header).
-
 
 class LocalValidationError(Exception):
     """El archivo no pasó las verificaciones que el cliente hace antes de enviarlo.
@@ -95,31 +82,16 @@ class ClientSession:
         port: Puerto donde escucha el servidor.
         user: Nombre que se declara en cada pedido. Se declara, no se autentica: es una
             limitación conocida y documentada del protocolo.
-        on_frame: Observador opcional de cada mensaje que sale y cada uno que entra. Es el
-            enganche que le permite a la interfaz mostrar el protocolo en vivo sin que
-            este módulo sepa que existe.
     """
 
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        user: str,
-        on_frame: FrameCallback | None = None,
-    ) -> None:
+    def __init__(self, host: str, port: int, user: str) -> None:
         """Prepara la sesión sin conectarse todavía."""
         self.host = host
         self.port = port
         self.user = user
-        self.on_frame = on_frame
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-
-        # El protocolo admite un pedido por vez sobre la misma conexión. En el modo
-        # directo eso pasa solo, pero la interfaz permite disparar dos acciones antes de
-        # que la primera termine.
-        self._one_request_at_a_time = asyncio.Lock()
 
     # ─────────────────────── ciclo de vida de la conexión ───────────────────────
 
@@ -202,12 +174,8 @@ class ClientSession:
             "filename": image_path.name,
         }
 
-        async with self._one_request_at_a_time:
-            self._notify_frame(SENT, request)
-            await protocol.send_file(
-                self._require_writer(), request, image_path, on_progress
-            )
-            return await self._receive_response()
+        await protocol.send_file(self._require_writer(), request, image_path, on_progress)
+        return await self._receive_response()
 
     async def status(self, job_id: str) -> dict[str, Any]:
         """Consulta el estado de un trabajo y, si terminó, los datos que produjo.
@@ -274,17 +242,15 @@ class ClientSession:
             "job_id": job_id,
         }
 
-        async with self._one_request_at_a_time:
-            self._notify_frame(SENT, request)
-            await protocol.send_message(self._require_writer(), request)
+        await protocol.send_message(self._require_writer(), request)
 
-            response = await self._receive_response()
-            payload_size = protocol.payload_size_of(response)
+        response = await self._receive_response()
+        payload_size = protocol.payload_size_of(response)
 
-            output_path = destination or Path(response.get("filename", f"{job_id}.bin"))
-            await self._write_payload_to_disk(output_path, payload_size, on_progress)
+        output_path = destination or Path(response.get("filename", f"{job_id}.bin"))
+        await self._write_payload_to_disk(output_path, payload_size, on_progress)
 
-            return output_path, response
+        return output_path, response
 
     # ────────────────────────── espera de un resultado ──────────────────────────
 
@@ -298,8 +264,8 @@ class ClientSession:
 
         Implementa la política de espera del protocolo: el servidor nunca avisa por su
         cuenta —solo responde— así que es el cliente el que vuelve a preguntar. Entre
-        consulta y consulta espera con `asyncio.sleep`, que no bloquea: en la interfaz la
-        pantalla se sigue repintando durante toda la espera.
+        consulta y consulta espera con `asyncio.sleep`, que no bloquea el event loop: la
+        barra de progreso se sigue animando durante toda la espera.
 
         Rendirse por tiempo **no cancela nada**: el trabajo sigue su curso en el worker y
         el resultado queda disponible para pedirlo después con el mismo `job_id`.
@@ -341,19 +307,16 @@ class ClientSession:
         Es el camino de `status` y `history`. El `submit` no lo usa porque manda un
         archivo, y el `download` tampoco porque recibe uno.
         """
-        async with self._one_request_at_a_time:
-            self._notify_frame(SENT, header)
-            await protocol.send_message(self._require_writer(), header)
-            return await self._receive_response()
+        await protocol.send_message(self._require_writer(), header)
+        return await self._receive_response()
 
     async def _receive_response(self) -> dict[str, Any]:
-        """Lee el header de la respuesta, se lo informa al observador y lo verifica.
+        """Lee el header de la respuesta y lo verifica.
 
         Raises:
             messages.ServerError: Si el servidor respondió un `error`.
         """
         response = await protocol.receive_header(self._require_reader())
-        self._notify_frame(RECEIVED, response)
         return messages.raise_if_error(response)
 
     async def _write_payload_to_disk(
@@ -380,11 +343,6 @@ class ClientSession:
             # Un archivo truncado es peor que ninguno: parece una imagen y no lo es.
             output_path.unlink(missing_ok=True)
             raise
-
-    def _notify_frame(self, direction: str, header: dict[str, Any]) -> None:
-        """Le avisa al observador que un mensaje salió o llegó, si hay observador."""
-        if self.on_frame is not None:
-            self.on_frame(direction, header)
 
     def _require_writer(self) -> asyncio.StreamWriter:
         """Devuelve el stream de escritura, verificando que la sesión esté conectada.

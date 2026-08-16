@@ -85,20 +85,17 @@ class FakeServer:
         return header, payload
 
 
-async def connected_session(
-    fake_server: FakeServer, **kwargs: Any
-) -> session.ClientSession:
+async def connected_session(fake_server: FakeServer) -> session.ClientSession:
     """Levanta el servidor de mentira y devuelve una sesión ya conectada a él.
 
     Args:
         fake_server: El servidor que va a atender.
-        **kwargs: Argumentos extra para `ClientSession`, como `on_frame`.
 
     Returns:
         La sesión conectada, lista para enviar pedidos.
     """
     port = await fake_server.start()
-    client_session = session.ClientSession("127.0.0.1", port, "augusto", **kwargs)
+    client_session = session.ClientSession("127.0.0.1", port, "augusto")
     await client_session.connect()
     return client_session
 
@@ -494,77 +491,6 @@ async def test_wait_gives_up_on_timeout_without_cancelling_anything() -> None:
 
 
 # ─────────────────────── reglas del diálogo ───────────────────────
-
-
-@pytest.mark.asyncio
-async def test_two_simultaneous_requests_do_not_interleave() -> None:
-    """El candado hace cumplir la regla de un pedido por vez sobre la misma conexión.
-
-    Sin él, dos corrutinas escribiendo a la vez mezclarían sus mensajes y cada una leería
-    la respuesta de la otra: el protocolo no numera los pedidos, así que nada permitiría
-    detectarlo.
-    """
-
-    async def answer_each_request_with_its_job_id(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        for _ in range(2):
-            request, _payload = await fake_server.read_request(reader)
-            # Una demora antes de contestar el primero: si hubiera entrelazado, el
-            # segundo pedido llegaría en el medio.
-            await asyncio.sleep(0.05)
-            await protocol.send_message(writer, {
-                messages.TYPE_FIELD: messages.OK,
-                "job_id": request["job_id"],
-                "status": messages.DONE,
-            })
-
-    fake_server = FakeServer(answer_each_request_with_its_job_id)
-    client_session = await connected_session(fake_server)
-
-    first, second = await asyncio.gather(
-        client_session.status("primero"), client_session.status("segundo")
-    )
-
-    # Cada respuesta corresponde a su propio pedido.
-    assert first["job_id"] == "primero"
-    assert second["job_id"] == "segundo"
-
-    await client_session.close()
-    await fake_server.stop()
-
-
-@pytest.mark.asyncio
-async def test_every_frame_is_reported_to_the_observer() -> None:
-    """El observador ve cada mensaje que sale y cada uno que entra, en orden."""
-
-    async def answer_once(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        await fake_server.read_request(reader)
-        await protocol.send_message(writer, {
-            messages.TYPE_FIELD: messages.OK, "job_id": "a3f7b2c1", "status": messages.DONE
-        })
-
-    fake_server = FakeServer(answer_once)
-
-    observed: list[tuple[str, str]] = []
-    client_session = await connected_session(
-        fake_server,
-        on_frame=lambda direction, header: observed.append(
-            (direction, header.get(messages.TYPE_FIELD, ""))
-        ),
-    )
-
-    await client_session.status("a3f7b2c1")
-
-    assert observed == [
-        (session.SENT, messages.STATUS),
-        (session.RECEIVED, messages.OK),
-    ]
-
-    await client_session.close()
-    await fake_server.stop()
 
 
 @pytest.mark.asyncio

@@ -1,11 +1,11 @@
 """Cómo se ve un dato del protocolo cuando se lo muestra: colores, íconos y etiquetas.
 
-Lo usan las dos interfaces —el modo directo y la interactiva— para que un trabajo `DONE`
-se vea igual en las dos y no haya dos listas de colores que se puedan desincronizar.
+Concentra en un solo lugar las decisiones de presentación que se repiten —de qué color va
+cada estado, cómo se abrevia un tamaño, cómo se lee una fecha— para que no queden
+esparcidas por el código y se puedan desincronizar entre sí.
 
-Acá no hay lógica de red ni de negocio: entra un valor del protocolo y sale texto. Los
-nombres de estilo son los de Rich, que Textual también entiende por estar construido
-sobre él.
+Acá no hay lógica de red ni de negocio: entra un valor del protocolo y sale texto listo
+para mostrar. Los nombres de estilo son los de Rich.
 """
 
 from __future__ import annotations
