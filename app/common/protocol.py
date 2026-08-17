@@ -186,7 +186,7 @@ async def send_file(
 
     framed_header = pack_header(header_with_size)
     writer.write(framed_header)
-    await writer.drain()
+    await writer.drain() #Consulta el tamaño de esa lista.
 
     sent_bytes = 0
     for chunk in read_in_chunks(file_path):
@@ -308,8 +308,6 @@ def payload_size_of(header: dict[str, Any]) -> int:
     """
     declared_size = header.get(PAYLOAD_SIZE_FIELD, 0)
 
-    # El bool se descarta aparte porque en Python es subclase de int: sin esto, un
-    # payload_size de `true` pasaría como si fuera 1.
     if not isinstance(declared_size, int) or isinstance(declared_size, bool):
         raise ProtocolError(f"'{PAYLOAD_SIZE_FIELD}' debe ser un entero")
     if declared_size < 0:

@@ -52,7 +52,7 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
 
 1. `app/common/protocol.py` + `app/common/config.py` (mínimo imprescindible).
 2. `app/client/client.py` — CLI completa.
-3. `app/server/main.py` + `app/server/server.py` — proceso principal con `asyncio`.
+3. `app/server/cli.py` + `app/server/server.py` — proceso principal con `asyncio`.
 
 ---
 

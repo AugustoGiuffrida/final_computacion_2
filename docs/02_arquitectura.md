@@ -487,7 +487,7 @@ final_comp2/
 │   ├── client/
 │   │   └── client.py        # argparse + asyncio streams; una función por acción
 │   ├── server/
-│   │   ├── main.py          # argparse, arranque: lanza el proceso de ingreso, recupera trabajos
+│   │   ├── cli.py           # argparse, arranque: lanza el proceso de ingreso, recupera trabajos
 │   │   │                    #   en curso, instala manejo de señales, inicia el loop
 │   │   ├── server.py        # asyncio.start_server + un handler por tipo de mensaje
 │   │   ├── registry.py      # resolución de trabajos: índice en memoria + lecturas
@@ -545,7 +545,7 @@ desenlaces y lo que se persiste en cada uno, está en la sección 4.3.
 | Mecanismos de IPC | dos `mp.Queue` (pedidos y respuestas) entre servidor e `intake.py` |
 | Asincronismo de I/O | asyncio en el servidor y en el cliente (streams en ambos) |
 | Cola de tareas distribuidas | Celery + Redis, tareas en `tasks.py` |
-| Parseo de argumentos CLI | argparse en `client.py` y `main.py` |
+| Parseo de argumentos CLI | argparse en `client/cli.py` y `server/cli.py` |
 
 | Adicional | Dónde |
 |---|---|
