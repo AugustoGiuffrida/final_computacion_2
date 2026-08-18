@@ -553,3 +553,16 @@ desenlaces y lo que se persiste en cada uno, está en la sección 4.3.
 | Base de datos | SQLite, escrita por el proceso de ingreso |
 | Celery para tareas en paralelo | workers escalables + `sanitize` encadenado |
 | Entorno visual | Flower, panel web de la cola (sección 4.7, opcional) |
+
+
+## NFS docker
+
+´´´sh
+volumes:
+  nfs_shared_volume:
+    driver: local
+    driver_opts:
+      type: "nfs"
+      o: "addr=192.168.1.100,rw,noatime,nolock"
+      device: ":/ruta/en/el/servidor/nfs"
+´´´
