@@ -26,6 +26,7 @@ import logging
 from typing import Any
 
 from app.common import config, messages, protocol
+from app.server import registry
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class ImageServer:
         self.host = host
         self.port = port
         self.connected_clients = 0
+        self.jobs = registry.JobRegistry()
         self._server: asyncio.Server | None = None
 
     # ─────────────────────── ciclo de vida ───────────────────────
@@ -202,13 +204,19 @@ class ImageServer:
         while True:
             header = await protocol.receive_header(reader)
             payload_size = protocol.payload_size_of(header)
-            request_type = header.get(messages.TYPE_FIELD)
 
             logger.info(
-                "pedido '%s' (%d bytes de payload)", request_type, payload_size
+                "pedido '%s' (%d bytes de payload)",
+                header.get(messages.TYPE_FIELD), payload_size,
             )
 
-            await self.dispatch(header, payload_size, reader, writer)
+            try:
+                await self.dispatch(header, payload_size, reader, writer)
+            except messages.RequestError as error:
+                # Un pedido rechazado es una respuesta más y NO corta la conexión: el
+                # cliente tiene que poder distinguirlo de una caída del servidor.
+                logger.info("rechazado: %s", error)
+                await respond_error(writer, error.code, error.detail)
 
     async def dispatch(
         self,
@@ -219,8 +227,13 @@ class ImageServer:
     ) -> None:
         """Deriva el pedido al manejador que corresponda según su tipo.
 
-        Consume el payload en todos los casos, también cuando el pedido se rechaza: los
-        bytes que quedaran sin leer desfasarían todos los mensajes siguientes.
+        Distingue dos rechazos que son cosas distintas: un tipo que **no existe** en el
+        protocolo es `BAD_REQUEST`, y uno que existe pero **todavía no está implementado**
+        es `INTERNAL`.
+
+        Los pedidos que no llegan a un manejador consumen su payload acá antes de
+        rechazarse. Los que sí llegan lo consumen ellos: `submit` necesita leerlo, no
+        descartarlo.
 
         Args:
             header: Header del pedido, ya deserializado.
@@ -230,26 +243,130 @@ class ImageServer:
 
         Returns:
             None.
+
+        Raises:
+            messages.RequestError: Si el tipo no existe o todavía no está implementado.
         """
         request_type = header.get(messages.TYPE_FIELD)
 
         if request_type not in messages.REQUEST_TYPES:
             await discard_payload(reader, payload_size)
-            await respond_error(
-                writer,
-                messages.BAD_REQUEST,
-                f"tipo de pedido desconocido: '{request_type}'",
+            raise messages.RequestError(
+                messages.BAD_REQUEST, f"tipo de pedido desconocido: '{request_type}'"
             )
-            return
 
-        # Etapa 1: el framing y el despacho funcionan, pero ningún pedido se atiende
-        # todavía. Cada uno se irá implementando en su propio manejador.
+        if request_type == messages.HISTORY:
+            await self.handle_history(header, payload_size, reader, writer)
+        else:
+            # `submit`, `status` y `download` existen en el protocolo pero todavía no se
+            # atienden: les falta el proceso de ingreso, la cola de tareas o ambos. Cada
+            # uno se irá sumando como un `elif` propio a medida que se implemente.
+            await discard_payload(reader, payload_size)
+            raise messages.RequestError(
+                messages.INTERNAL, f"el servidor todavía no implementa '{request_type}'"
+            )
+
+    # ─────────────────────── manejadores de cada pedido ───────────────────────
+
+    async def handle_history(
+        self,
+        header: dict[str, Any],
+        payload_size: int,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Responde los últimos trabajos del usuario, del más reciente al más antiguo.
+
+        Los trabajos salen del registro en memoria, así que solo aparecen los aceptados
+        desde que el servidor arrancó. En el diseño completo, los anteriores salen de
+        SQLite.
+
+        El payload se consume **antes** de validar: si la validación fallara primero, esos
+        bytes quedarían en el socket y el mensaje siguiente los tomaría como su prefijo de
+        longitud. La regla vale para los cuatro manejadores: consumir primero, validar
+        después.
+
+        Args:
+            header: Header del pedido.
+            payload_size: Bytes de payload declarados. `history` no lleva ninguno.
+            reader: Stream de lectura, para consumir el payload.
+            writer: Stream de escritura, para responder.
+
+        Returns:
+            None.
+
+        Raises:
+            messages.RequestError: `BAD_REQUEST` si falta el usuario o el límite es
+                inválido.
+        """
         await discard_payload(reader, payload_size)
-        await respond_error(
-            writer,
-            messages.INTERNAL,
-            f"el servidor todavía no implementa '{request_type}'",
+
+        user = require_user(header)
+        limit = read_limit(header)
+
+        jobs = self.jobs.list_for(user, limit)
+        logger.info("historial de '%s': %d trabajos", user, len(jobs))
+
+        await protocol.send_message(writer, {
+            messages.TYPE_FIELD: messages.OK,
+            "jobs": [job.as_summary() for job in jobs],
+        })
+
+
+# ──────────────────────── validación de campos comunes ────────────────────────
+
+
+def require_user(header: dict[str, Any]) -> str:
+    """Lee el usuario declarado en el pedido, verificando que esté presente.
+
+    Los cuatro pedidos del protocolo lo llevan, así que se valida en un solo lugar.
+
+    Args:
+        header: Header del pedido, ya deserializado.
+
+    Returns:
+        El nombre del usuario, sin espacios sobrantes.
+
+    Raises:
+        messages.RequestError: `BAD_REQUEST` si falta, está vacío o no es texto.
+    """
+    user = header.get("user")
+
+    if not isinstance(user, str) or not user.strip():
+        raise messages.RequestError(
+            messages.BAD_REQUEST, "falta el campo 'user' o está vacío"
         )
+
+    return user.strip()
+
+
+def read_limit(header: dict[str, Any]) -> int:
+    """Lee cuántos trabajos devolver en el historial, con un tope propio del servidor.
+
+    El tope existe porque el límite lo elige el cliente: sin él, un pedido de un millón de
+    filas haría trabajar al servidor mucho más de lo razonable. Se recorta en silencio en
+    vez de rechazar el pedido, porque pedir de más no es un error del cliente: no tiene
+    por qué conocer nuestro tope, y sería un error que no puede corregir.
+
+    Args:
+        header: Header del pedido, ya deserializado.
+
+    Returns:
+        La cantidad a devolver, acotada a `config.MAX_HISTORY_LIMIT`.
+
+    Raises:
+        messages.RequestError: `BAD_REQUEST` si el valor no es un entero positivo.
+    """
+    limit = header.get("limit", config.DEFAULT_HISTORY_LIMIT)
+
+    # El bool se descarta aparte porque en Python es subclase de int: sin esto, un
+    # 'limit' de `true` pasaría como si fuera 1.
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        raise messages.RequestError(
+            messages.BAD_REQUEST, "'limit' debe ser un entero positivo"
+        )
+
+    return min(limit, config.MAX_HISTORY_LIMIT)
 
 
 # ─────────────────────────── funciones auxiliares ───────────────────────────

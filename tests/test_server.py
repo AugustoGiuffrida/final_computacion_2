@@ -14,7 +14,8 @@ import unittest
 from pathlib import Path
 
 from app.client import session
-from app.common import messages, protocol
+from app.common import config, messages, protocol
+from app.server import registry
 from app.server.server import ImageServer
 
 
@@ -33,6 +34,7 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
         self.working_directory = Path(self._temporary_directory.name)
         self._servers: list[ImageServer] = []
         self._clients: list[session.ClientSession] = []
+        self._writers: list[asyncio.StreamWriter] = []
 
     def tearDown(self) -> None:
         """Borra el directorio temporal."""
@@ -70,8 +72,36 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
         self._clients.append(client)
         return client
 
+    async def open_raw_connection(
+        self, host: str, port: int
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Abre una conexión sin pasar por `ClientSession`, para hablar el protocolo a mano.
+
+        Registra el writer para cerrarlo al terminar. Si una prueba dejara una conexión
+        abierta, el `wait_closed` del servidor esperaría para siempre a que su handler
+        termine, y una aserción fallida colgaría toda la suite en vez de reportarse.
+
+        Args:
+            host: Dirección del servidor.
+            port: Puerto del servidor.
+
+        Returns:
+            Los dos extremos de la conexión.
+        """
+        reader, writer = await asyncio.open_connection(host, port)
+        self._writers.append(writer)
+        return reader, writer
+
     async def _close_everything(self) -> None:
-        """Cierra los clientes y los servidores que la prueba haya levantado."""
+        """Cierra las conexiones, los clientes y los servidores que la prueba levantó."""
+        while self._writers:
+            writer = self._writers.pop()
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (OSError, asyncio.IncompleteReadError):
+                pass  # el otro extremo ya había cerrado
+
         while self._clients:
             await self._clients.pop().close()
         while self._servers:
@@ -139,27 +169,27 @@ class RequestHandling(ServerTestCase):
 
 
 
-    async def test_a_known_request_is_answered_as_not_implemented_yet(self) -> None:
-        """Los cuatro pedidos del protocolo se reconocen, pero todavía no se atienden.
+    async def test_a_request_without_a_handler_yet_says_so(self) -> None:
+        """Un pedido que el protocolo define pero el servidor todavía no atiende.
 
-        Es el estado esperado de esta etapa: el framing y el despacho funcionan; la lógica de
-        cada pedido llega cuando el profesor apruebe los componentes que necesita.
+        Es el estado esperado de esta etapa: el tipo se reconoce —no es `BAD_REQUEST`—
+        pero su lógica llega cuando se aprueben los componentes que necesita.
         """
         server = await self.running_server()
         client = await self.connected_client(server)
 
         with self.assertRaises(messages.ServerError) as raised:
-            await client.history(limit=10)
+            await client.status("a3f7b2c1")
 
         self.assertEqual(raised.exception.code, messages.INTERNAL)
-        self.assertIn("history", raised.exception.message)
+        self.assertIn("status", raised.exception.message)
 
 
 
     async def test_an_unknown_request_type_is_rejected(self) -> None:
         """Un tipo de mensaje que no existe se rechaza con BAD_REQUEST."""
         server = await self.running_server()
-        reader, writer = await asyncio.open_connection("127.0.0.1", server.listening_port)
+        reader, writer = await self.open_raw_connection("127.0.0.1", server.listening_port)
 
         await protocol.send_message(writer, {
             messages.TYPE_FIELD: "borrar_todo", "user": "augusto"
@@ -228,7 +258,7 @@ class Robustness(ServerTestCase):
         server = await self.running_server()
 
         # Un cliente envía un prefijo que anuncia un header disparatado.
-        _, bad_writer = await asyncio.open_connection("127.0.0.1", server.listening_port)
+        _, bad_writer = await self.open_raw_connection("127.0.0.1", server.listening_port)
         absurd_size = protocol.MAX_HEADER_SIZE + 1
         bad_writer.write(protocol.encode_length(absurd_size))
         await bad_writer.drain()
@@ -238,8 +268,7 @@ class Robustness(ServerTestCase):
 
         # El servidor sigue atendiendo con normalidad.
         good_client = await self.connected_client(server)
-        with self.assertRaises(messages.ServerError):
-            await good_client.history(limit=1)
+        self.assertEqual(await good_client.history(limit=1), [])
 
 
 
@@ -254,13 +283,126 @@ class Robustness(ServerTestCase):
         abandoned_client._writer.transport.abort()  # type: ignore[union-attr]
         await asyncio.sleep(0.05)
 
-        with self.assertRaises(messages.ServerError):
-            await surviving_client.history(limit=1)
+        self.assertEqual(await surviving_client.history(limit=1), [])
 
         self.assertEqual(server.connected_clients, 1)
 
 
 
+
+
+# ──────────────────────── historial ────────────────────────
+
+
+class HistoryRequest(ServerTestCase):
+    """El pedido `history`: listado de los trabajos del usuario."""
+
+    async def test_a_user_without_jobs_gets_an_empty_list(self) -> None:
+        """No tener trabajos no es un error: la respuesta es una lista vacía."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        self.assertEqual(await client.history(limit=10), [])
+
+    async def test_only_the_jobs_of_that_user_are_listed(self) -> None:
+        """Cada usuario ve los suyos y ninguno más."""
+        server = await self.running_server()
+        server.jobs.add(registry.new_job("augusto", "anonymize", {}, "foto.jpg"))
+        server.jobs.add(registry.new_job("ana", "compress", {}, "otra.png"))
+
+        client = await self.connected_client(server)
+        listed = await client.history(limit=10)
+
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["op"], "anonymize")
+
+    async def test_the_most_recent_job_comes_first(self) -> None:
+        """El historial llega ordenado de lo más nuevo a lo más viejo."""
+        server = await self.running_server()
+        for operation in ("anonymize", "clean", "compress"):
+            server.jobs.add(registry.new_job("augusto", operation, {}, "foto.jpg"))
+
+        client = await self.connected_client(server)
+        listed = await client.history(limit=10)
+
+        self.assertEqual(
+            [job["op"] for job in listed], ["compress", "clean", "anonymize"]
+        )
+
+    async def test_the_limit_is_respected(self) -> None:
+        """Se devuelven a lo sumo tantos trabajos como se hayan pedido."""
+        server = await self.running_server()
+        for _ in range(5):
+            server.jobs.add(registry.new_job("augusto", "clean", {}, "foto.jpg"))
+
+        client = await self.connected_client(server)
+
+        self.assertEqual(len(await client.history(limit=2)), 2)
+
+    async def test_an_oversized_limit_is_trimmed_instead_of_rejected(self) -> None:
+        """Pedir más de la cuenta no es un error del cliente: se recorta al tope."""
+        server = await self.running_server()
+        for _ in range(config.MAX_HISTORY_LIMIT + 10):
+            server.jobs.add(registry.new_job("augusto", "clean", {}, "foto.jpg"))
+
+        client = await self.connected_client(server)
+        listed = await client.history(limit=100_000)
+
+        self.assertEqual(len(listed), config.MAX_HISTORY_LIMIT)
+
+    async def test_an_invalid_limit_is_rejected(self) -> None:
+        """Un límite negativo o que no sea un entero no tiene interpretación razonable."""
+        server = await self.running_server()
+
+        for invalid_limit in (0, -3, "muchos", True):
+            with self.subTest(limit=invalid_limit):
+                reader, writer = await self.open_raw_connection(
+                    "127.0.0.1", server.listening_port
+                )
+                await protocol.send_message(writer, {
+                    messages.TYPE_FIELD: messages.HISTORY,
+                    "user": "augusto",
+                    "limit": invalid_limit,
+                })
+                response = await protocol.receive_header(reader)
+
+                self.assertEqual(response[messages.TYPE_FIELD], messages.ERROR)
+                self.assertEqual(response["code"], messages.BAD_REQUEST)
+
+    async def test_a_request_without_a_user_is_rejected(self) -> None:
+        """Todo pedido declara de quién es: sin eso no se puede saber qué listar."""
+        server = await self.running_server()
+        reader, writer = await self.open_raw_connection(
+            "127.0.0.1", server.listening_port
+        )
+
+        await protocol.send_message(writer, {messages.TYPE_FIELD: messages.HISTORY})
+        response = await protocol.receive_header(reader)
+
+        self.assertEqual(response["code"], messages.BAD_REQUEST)
+        self.assertIn("user", response["message"])
+
+    async def test_a_rejected_request_does_not_close_the_connection(self) -> None:
+        """Tras un rechazo se puede seguir pidiendo por la misma conexión.
+
+        Es la regla del protocolo: un error es una respuesta más. Si cortara, el cliente
+        no podría distinguir un pedido inválido de una caída del servidor.
+        """
+        server = await self.running_server()
+        reader, writer = await self.open_raw_connection(
+            "127.0.0.1", server.listening_port
+        )
+
+        await protocol.send_message(writer, {messages.TYPE_FIELD: messages.HISTORY})
+        rejected = await protocol.receive_header(reader)
+        self.assertEqual(rejected[messages.TYPE_FIELD], messages.ERROR)
+
+        await protocol.send_message(writer, {
+            messages.TYPE_FIELD: messages.HISTORY, "user": "augusto"
+        })
+        accepted = await protocol.receive_header(reader)
+
+        self.assertEqual(accepted[messages.TYPE_FIELD], messages.OK)
 
 
 # ──────────────────────── familias de direcciones ────────────────────────
@@ -287,17 +429,14 @@ class AddressFamilies(ServerTestCase):
 
         for listening in listening_sockets:
             port = listening.getsockname()[1]
-            reader, writer = await asyncio.open_connection(loopback_of[listening.family], port)
+            reader, writer = await self.open_raw_connection(loopback_of[listening.family], port)
             await protocol.send_message(writer, {
                 messages.TYPE_FIELD: messages.HISTORY, "user": "augusto", "limit": 1
             })
             response = await protocol.receive_header(reader)
 
-            # Todavía no implementado.
-
-            self.assertEqual(response[messages.TYPE_FIELD], messages.ERROR)
-            writer.close()
-            await writer.wait_closed()
+            self.assertEqual(response[messages.TYPE_FIELD], messages.OK)
+            self.assertEqual(response["jobs"], [])
 
 
 

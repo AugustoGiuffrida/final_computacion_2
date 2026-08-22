@@ -142,8 +142,11 @@ def add_query_arguments(parser: argparse.ArgumentParser) -> None:
         help="dónde guardar el archivo descargado (por defecto, el nombre que sugiera el servidor)",
     )
     group.add_argument(
-        "--limit", type=positive_integer, default=10,
-        help="cantidad de trabajos a listar en el historial (por defecto: 10)",
+        "--limit", type=positive_integer, default=config.DEFAULT_HISTORY_LIMIT,
+        help=(
+            "cantidad de trabajos a listar en el historial "
+            f"(por defecto: {config.DEFAULT_HISTORY_LIMIT})"
+        ),
     )
 
 

@@ -70,6 +70,14 @@ ANONYMIZE_MODES: Final[tuple[str, ...]] = ("blur", "pixelate", "box") #Formas de
 
 CONVERT_FORMATS: Final[tuple[str, ...]] = ("webp", "jpeg", "png") #Formatos de salida de convert.
 
+# ─────────────────────────── historial ───────────────────────────
+
+DEFAULT_HISTORY_LIMIT: Final[int] = 10 #Cuántos trabajos devuelve si el cliente no pide una cantidad.
+
+# Tope que impone el servidor, elija lo que elija el cliente. Un pedido más grande no se
+# rechaza: se recorta a este valor.
+MAX_HISTORY_LIMIT: Final[int] = 100
+
 # ────────────────────────── espera del cliente ──────────────────────────
 
 STATUS_POLL_INTERVAL_SECONDS: Final[float] = 1.0 #Cada cuánto reconsulta el cliente con --wait.
