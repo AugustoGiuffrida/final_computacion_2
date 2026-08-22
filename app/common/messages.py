@@ -93,15 +93,24 @@ class RequestError(Exception):
     responder lo que pide. Por eso **no cierra la conexión**: el cliente puede seguir
     haciendo pedidos.
 
+    Casi todos los rechazos dejan la conexión utilizable, pero no todos: si el pedido
+    traía un payload que no se va a leer, esos bytes quedarían en el socket y desfasarían
+    el mensaje siguiente. Para esos casos existe `closes_connection`.
+
     Attributes:
         code: Uno de los códigos de este módulo.
         detail: Explicación para el usuario.
+        closes_connection: Si tras responder hay que cerrar, porque no se puede
+            recuperar la sincronización del diálogo.
     """
 
-    def __init__(self, code: str, detail: str) -> None:
+    def __init__(
+        self, code: str, detail: str, *, closes_connection: bool = False
+    ) -> None:
         """Construye el error con su código y su explicación."""
         self.code = code
         self.detail = detail
+        self.closes_connection = closes_connection
         super().__init__(f"{code}: {detail}")
 
 

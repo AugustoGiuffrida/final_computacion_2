@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import logging
 import signal
+from pathlib import Path
 
 from app.common import config
 from app.server.server import ImageServer
@@ -29,6 +30,12 @@ USAGE_EXAMPLES = """Ejemplos:
 
   %(prog)s --host 127.0.0.1
       solo acepta conexiones de esta misma máquina
+
+  %(prog)s --storage-dir /var/lib/imagenes
+      guarda los archivos en otro lado
+
+  %(prog)s --storage-dir /var/lib/imagenes
+      guarda los archivos recibidos en otro directorio
 
   %(prog)s --verbose
       además del registro normal, muestra el detalle de cada mensaje"""
@@ -60,6 +67,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=port_number, 
         default=config.DEFAULT_PORT,
         help=f"puerto en el que escuchar (por defecto: {config.DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--storage-dir",
+        type=Path,
+        default=config.STORAGE_DIR,
+        help=(
+            "directorio raíz de los archivos; las imágenes recibidas van a su "
+            f"subdirectorio 'uploads/' (por defecto: {config.STORAGE_DIR})"
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -153,7 +169,7 @@ async def run_server(arguments: argparse.Namespace) -> None:
     stop_requested = asyncio.Event()
     install_shutdown_handlers(stop_requested)
 
-    server = ImageServer(arguments.host, arguments.port)
+    server = ImageServer(arguments.host, arguments.port, arguments.storage_dir)
     await server.serve_until_stopped(stop_requested)
 
 

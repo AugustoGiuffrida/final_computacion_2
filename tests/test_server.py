@@ -12,6 +12,7 @@ import socket
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from app.client import session
 from app.common import config, messages, protocol
@@ -49,7 +50,7 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
         Returns:
             El servidor ya escuchando.
         """
-        server = ImageServer(host, 0)
+        server = ImageServer(host, 0, storage_dir=self.working_directory)
         await server.start()
 
         self._servers.append(server)
@@ -203,32 +204,34 @@ class RequestHandling(ServerTestCase):
         await writer.wait_closed()
 
 
-    async def test_the_payload_is_consumed_even_when_the_request_is_rejected(self) -> None:
-        """Tras rechazar un pedido con imagen, el mensaje siguiente se lee correctamente.
+    async def test_the_payload_of_an_unimplemented_request_is_consumed(self) -> None:
+        """Un pedido sin implementar que traiga payload no desfasa el diálogo.
 
-        Es la prueba más importante de esta etapa. Si el servidor no consumiera el payload de
-        un pedido que rechaza, esos bytes quedarían en el socket y el `receive_header` del
-        mensaje siguiente los tomaría como su prefijo de longitud: el diálogo quedaría
-        desfasado y ninguno de los dos extremos podría detectarlo.
+        Los bytes ya vienen en camino, así que hay que sacarlos del socket aunque el
+        pedido se rechace. Si quedaran ahí, el `receive_header` siguiente los tomaría
+        como su prefijo de longitud y ninguno de los dos extremos podría detectarlo.
         """
         server = await self.running_server()
-        client = await self.connected_client(server)
+        reader, writer = await self.open_raw_connection(
+            "127.0.0.1", server.listening_port
+        )
 
-        image = self.working_directory / "foto.jpg"
-        image.write_bytes(b"\xff\xd8\xff\xe0" + b"x" * 200_000)  # más de tres bloques
+        # `status` todavía no está implementado, y encima se le manda un payload.
+        await protocol.send_message(writer, {
+            messages.TYPE_FIELD: messages.STATUS,
+            "user": "augusto",
+            "job_id": "a3f7b2c1",
+        }, b"x" * 200_000)
+        rejected = await protocol.receive_header(reader)
+        self.assertEqual(rejected["code"], messages.INTERNAL)
 
-        # Primer pedido: lleva 200 KB de payload y el servidor lo rechaza.
-        with self.assertRaises(messages.ServerError):
-            await client.submit(image, "inspect", {})
+        # El pedido siguiente sobre la misma conexión tiene que entenderse bien.
+        await protocol.send_message(writer, {
+            messages.TYPE_FIELD: messages.HISTORY, "user": "augusto"
+        })
+        accepted = await protocol.receive_header(reader)
 
-        # Segundo pedido sobre la misma conexión: tiene que entenderse bien.
-        with self.assertRaises(messages.ServerError) as raised:
-            await client.status("a3f7b2c1")
-
-        self.assertEqual(raised.exception.code, messages.INTERNAL)
-        self.assertIn("status", raised.exception.message)
-
-
+        self.assertEqual(accepted[messages.TYPE_FIELD], messages.OK)
 
     async def test_several_requests_travel_over_one_connection(self) -> None:
         """Una conexión transporta varios pedidos seguidos, como manda el protocolo."""
@@ -404,6 +407,186 @@ class HistoryRequest(ServerTestCase):
 
         self.assertEqual(accepted[messages.TYPE_FIELD], messages.OK)
 
+
+# ──────────────────────── envío de imágenes ────────────────────────
+
+
+class SubmitRequest(ServerTestCase):
+    """El pedido `submit`: recibir una imagen y registrar el trabajo."""
+
+    def an_image(self, name: str = "foto.jpg", size: int = 200_000) -> Path:
+        """Crea un archivo de prueba del tamaño pedido.
+
+        Args:
+            name: Nombre del archivo.
+            size: Cuántos bytes escribirle.
+
+        Returns:
+            La ruta del archivo creado.
+        """
+        image = self.working_directory / name
+        image.write_bytes(b"\xff\xd8\xff\xe0" + b"x" * (size - 4))
+        return image
+
+    async def test_an_accepted_image_returns_a_new_job(self) -> None:
+        """Un envío válido devuelve un identificador y el trabajo queda encolado."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        response = await client.submit(self.an_image(), "anonymize", {"mode": "blur"})
+
+        self.assertEqual(response["status"], messages.QUEUED)
+        self.assertFalse(response["deduplicated"])
+        self.assertEqual(len(server.jobs), 1)
+
+    async def test_the_image_is_written_to_disk_intact(self) -> None:
+        """La imagen llega completa y sin alterarse, aunque viaje en varios bloques."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+        image = self.an_image(size=200_000)  # más de tres bloques
+
+        response = await client.submit(image, "clean", {})
+
+        stored = server.uploads_dir / response["job_id"] / "foto.jpg"
+        self.assertEqual(stored.read_bytes(), image.read_bytes())
+
+    async def test_the_job_appears_in_the_history(self) -> None:
+        """Lo que se envía se puede listar después: los dos pedidos ven lo mismo."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        await client.submit(self.an_image(), "compress", {"quality": 80})
+        listed = await client.history(limit=10)
+
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["op"], "compress")
+        self.assertEqual(listed[0]["filename"], "foto.jpg")
+
+    async def test_each_submit_gets_its_own_directory(self) -> None:
+        """Dos envíos no se pisan, aunque el archivo se llame igual."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        first = await client.submit(self.an_image(), "clean", {})
+        second = await client.submit(self.an_image(), "clean", {})
+
+        self.assertNotEqual(first["job_id"], second["job_id"])
+        self.assertEqual(len(list(server.uploads_dir.iterdir())), 2)
+
+    # ─────────────── pedidos que se rechazan ───────────────
+
+    async def test_an_unknown_operation_is_rejected(self) -> None:
+        """Una operación que no existe se rechaza con su propio código."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.submit(self.an_image(), "destruir", {})
+
+        self.assertEqual(raised.exception.code, messages.UNKNOWN_OP)
+        self.assertEqual(len(server.jobs), 0)
+
+    async def test_a_parameter_of_another_operation_is_rejected(self) -> None:
+        """Pasar `mode` a `clean` es una confusión, y silenciarla haría creer que se aplicó."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.submit(self.an_image(), "clean", {"mode": "blur"})
+
+        self.assertEqual(raised.exception.code, messages.BAD_REQUEST)
+
+    async def test_an_image_over_the_limit_is_rejected_before_being_read(self) -> None:
+        """Una imagen demasiado grande se rechaza sin escribir nada en disco."""
+        server = await self.running_server()
+        reader, writer = await self.open_raw_connection(
+            "127.0.0.1", server.listening_port
+        )
+
+        # Se anuncia un payload enorme sin llegar a enviarlo.
+        writer.write(protocol.pack_header({
+            messages.TYPE_FIELD: messages.SUBMIT,
+            "user": "augusto",
+            "op": "clean",
+            "params": {},
+            "filename": "enorme.jpg",
+            protocol.PAYLOAD_SIZE_FIELD: config.DEFAULT_MAX_IMAGE_SIZE + 1,
+        }))
+        await writer.drain()
+        response = await protocol.receive_header(reader)
+
+        self.assertEqual(response["code"], messages.TOO_LARGE)
+        self.assertEqual(len(list(server.uploads_dir.iterdir())), 0)
+
+    async def test_a_rejected_submit_does_not_desynchronise_the_dialogue(self) -> None:
+        """Tras rechazar un envío con imagen, el pedido siguiente se entiende bien.
+
+        El payload de un pedido rechazado igual hay que consumirlo: si quedara en el
+        socket, el `receive_header` siguiente lo tomaría como su prefijo de longitud.
+        """
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError):
+            await client.submit(self.an_image(), "destruir", {})
+
+        self.assertEqual(await client.history(limit=10), [])
+
+    # ─────────────── seguridad ───────────────
+
+    async def submit_with_filename(
+        self, server: ImageServer, filename: str
+    ) -> dict[str, Any]:
+        """Envía una imagen declarando un nombre arbitrario, sin usar `ClientSession`.
+
+        Hace falta hablar el protocolo a mano porque el cliente propio siempre manda el
+        nombre real del archivo. Un cliente hostil no tiene esa limitación, y es
+        justamente el caso que hay que probar.
+
+        Args:
+            server: El servidor al que enviar.
+            filename: El nombre a declarar en el header.
+
+        Returns:
+            El header de la respuesta.
+        """
+        content = b"\xff\xd8\xff\xe0" + b"x" * 1000
+        reader, writer = await self.open_raw_connection(
+            "127.0.0.1", server.listening_port
+        )
+
+        await protocol.send_message(writer, {
+            messages.TYPE_FIELD: messages.SUBMIT,
+            "user": "augusto",
+            "op": "clean",
+            "params": {},
+            "filename": filename,
+        }, content)
+
+        return await protocol.receive_header(reader)
+
+    async def test_a_filename_cannot_escape_its_directory(self) -> None:
+        """Un nombre con partes de ruta no puede escribir fuera del trabajo.
+
+        El nombre lo elige el cliente: sin sanearlo, un valor como '../../evil.jpg'
+        construiría una ruta fuera del directorio del trabajo. Se conserva solo el último
+        componente, así que el archivo cae adentro y con el nombre a secas.
+        """
+        server = await self.running_server()
+
+        response = await self.submit_with_filename(server, "../../../evil.jpg")
+
+        job_directory = server.uploads_dir / response["job_id"]
+        self.assertEqual([f.name for f in job_directory.iterdir()], ["evil.jpg"])
+        self.assertFalse((self.working_directory.parent / "evil.jpg").exists())
+
+    async def test_an_unsupported_extension_is_rejected(self) -> None:
+        """Un archivo que no dice ser una imagen se rechaza en la puerta."""
+        server = await self.running_server()
+
+        response = await self.submit_with_filename(server, "script.sh")
+
+        self.assertEqual(response["code"], messages.INVALID_IMAGE)
 
 # ──────────────────────── familias de direcciones ────────────────────────
 

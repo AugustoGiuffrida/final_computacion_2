@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+from pathlib import Path
 from typing import Any
 
 from app.common import config, messages, protocol
@@ -43,22 +45,31 @@ class ImageServer:
         host: Dirección en la que escucha. `None` significa todas las interfaces
             disponibles: abre un socket por familia, IPv4 e IPv6, en el mismo puerto.
         port: Puerto en el que escucha.
+        storage_dir: Raíz de los archivos del sistema.
+        uploads_dir: Dónde se guardan las imágenes recibidas, una carpeta por trabajo.
         connected_clients: Cuántas conexiones hay abiertas en este momento.
+        jobs: Registro en memoria de los trabajos aceptados.
     """
 
     def __init__(
         self,
         host: str | None = config.LISTEN_ON_ALL_INTERFACES,
         port: int = config.DEFAULT_PORT,
+        storage_dir: Path = config.STORAGE_DIR,
     ) -> None:
         """Prepara el servidor sin abrir todavía el socket de escucha.
 
         Args:
             host: Dirección de escucha, o None para todas las interfaces.
             port: Puerto de escucha.
+            storage_dir: Raíz de los archivos. Las imágenes recibidas van a su
+                subdirectorio `uploads/`. Se puede cambiar para no escribir en el
+                directorio real del proyecto, que es lo que hacen las pruebas.
         """
         self.host = host
         self.port = port
+        self.storage_dir = storage_dir
+        self.uploads_dir = storage_dir / "uploads"
         self.connected_clients = 0
         self.jobs = registry.JobRegistry()
         self._server: asyncio.Server | None = None
@@ -83,6 +94,8 @@ class ImageServer:
         Raises:
             OSError: Si el puerto está ocupado o la dirección no está disponible.
         """
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
+
         self._server = await asyncio.start_server(
             self.handle_client, self.host, self.port
         ) # host=None hace que getaddrinfo devuelva dos resultados(IPv4 (0.0.0.0) y la de IPv6 (::))
@@ -213,10 +226,14 @@ class ImageServer:
             try:
                 await self.dispatch(header, payload_size, reader, writer)
             except messages.RequestError as error:
-                # Un pedido rechazado es una respuesta más y NO corta la conexión: el
-                # cliente tiene que poder distinguirlo de una caída del servidor.
+                # Un pedido rechazado es una respuesta más y no corta la conexión: el
+                # cliente tiene que poder distinguirlo de una caída del servidor. La
+                # excepción son los rechazos que dejan bytes sin leer en el socket.
                 logger.info("rechazado: %s", error)
                 await respond_error(writer, error.code, error.detail)
+
+                if error.closes_connection:
+                    return
 
     async def dispatch(
         self,
@@ -249,6 +266,14 @@ class ImageServer:
         """
         request_type = header.get(messages.TYPE_FIELD)
 
+        if payload_size > config.DEFAULT_MAX_IMAGE_SIZE:
+            raise messages.RequestError(
+                messages.TOO_LARGE,
+                f"el payload declarado es de {payload_size} bytes y el máximo que se "
+                f"acepta es {config.DEFAULT_MAX_IMAGE_SIZE}",
+                closes_connection=True,
+            )
+
         if request_type not in messages.REQUEST_TYPES:
             await discard_payload(reader, payload_size)
             raise messages.RequestError(
@@ -257,10 +282,11 @@ class ImageServer:
 
         if request_type == messages.HISTORY:
             await self.handle_history(header, payload_size, reader, writer)
+        elif request_type == messages.SUBMIT:
+            await self.handle_submit(header, payload_size, reader, writer)
         else:
-            # `submit`, `status` y `download` existen en el protocolo pero todavía no se
-            # atienden: les falta el proceso de ingreso, la cola de tareas o ambos. Cada
-            # uno se irá sumando como un `elif` propio a medida que se implemente.
+            # `status` y `download` existen en el protocolo pero todavía no se atienden.
+            # Cada uno se irá sumando como un `elif` propio a medida que se implemente.
             await discard_payload(reader, payload_size)
             raise messages.RequestError(
                 messages.INTERNAL, f"el servidor todavía no implementa '{request_type}'"
@@ -310,6 +336,77 @@ class ImageServer:
         await protocol.send_message(writer, {
             messages.TYPE_FIELD: messages.OK,
             "jobs": [job.as_summary() for job in jobs],
+        })
+
+
+    async def handle_submit(
+        self,
+        header: dict[str, Any],
+        payload_size: int,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Recibe una imagen, la guarda y registra el trabajo.
+
+        Es el único pedido que trae payload y el único que escribe en disco.
+
+        El header se valida **antes** de leer la imagen, para no escribir megabytes que
+        van a descartarse. Como una validación fallida dejaría el payload sin leer y
+        desfasaría el mensaje siguiente, se consume antes de propagar el rechazo.
+
+        ESTADO: el trabajo queda en `QUEUED` y nada lo hace avanzar; falta la cola de
+        tareas. Y `deduplicated` es siempre falso: detectar repetidos es tarea del proceso
+        de ingreso, que tampoco existe todavía.
+
+        Args:
+            header: Header del pedido.
+            payload_size: Bytes de la imagen que siguen al header.
+            reader: Stream de lectura, para recibir la imagen.
+            writer: Stream de escritura, para responder.
+
+        Returns:
+            None.
+
+        Raises:
+            messages.RequestError: Si el pedido es inválido en cualquiera de sus campos.
+            asyncio.IncompleteReadError: Si la transferencia se corta antes de completar
+                los bytes anunciados.
+        """
+        try:
+            user = require_user(header)
+            operation = require_operation(header)
+            parameters = read_parameters(header, operation)
+            filename = safe_filename(header)
+            require_non_empty_image(payload_size)
+        except messages.RequestError:
+            # Consumir antes de propagar: los bytes ya vienen en camino y hay que sacarlos
+            # del socket para que el mensaje siguiente empiece donde debe.
+            await discard_payload(reader, payload_size)
+            raise
+
+        job = registry.new_job(user, operation, parameters, filename)
+        job_directory = self.uploads_dir / job.job_id
+
+        try:
+            await save_upload(reader, payload_size, job_directory / filename)
+        except BaseException:
+            # Ni el archivo a medias ni el directorio sirven si el trabajo no prospera.
+            # Se atrapa BaseException y no Exception porque una cancelación de la tarea
+            # llega como CancelledError, que no hereda de Exception.
+            shutil.rmtree(job_directory, ignore_errors=True)
+            raise
+
+        self.jobs.add(job)
+        logger.info(
+            "trabajo %s aceptado: '%s' sobre '%s' (%d bytes)",
+            job.job_id, operation, filename, payload_size,
+        )
+
+        await protocol.send_message(writer, {
+            messages.TYPE_FIELD: messages.OK,
+            "job_id": job.job_id,
+            "status": job.status,
+            "deduplicated": False,
         })
 
 
@@ -369,7 +466,166 @@ def read_limit(header: dict[str, Any]) -> int:
     return min(limit, config.MAX_HISTORY_LIMIT)
 
 
+
+def require_operation(header: dict[str, Any]) -> str:
+    """Lee la operación pedida, verificando que exista.
+
+    Args:
+        header: Header del pedido, ya deserializado.
+
+    Returns:
+        El nombre de la operación.
+
+    Raises:
+        messages.RequestError: `UNKNOWN_OP` si falta o no es una de las soportadas.
+    """
+    operation = header.get("op")
+
+    if not isinstance(operation, str) or operation not in config.OPERATION_PARAMETERS:
+        supported = ", ".join(sorted(config.OPERATION_PARAMETERS))
+        raise messages.RequestError(
+            messages.UNKNOWN_OP,
+            f"la operación '{operation}' no existe; las disponibles son: {supported}",
+        )
+
+    return operation
+
+
+def read_parameters(header: dict[str, Any], operation: str) -> dict[str, Any]:
+    """Lee los parámetros del pedido, verificando que correspondan a esa operación.
+
+    Se validan los **nombres**, no los valores: qué significa cada parámetro y qué rangos
+    admite lo sabe el worker que lo va a usar. El cliente ya verifica los rangos por
+    comodidad, pero eso no se puede dar por hecho — cualquiera puede hablar el protocolo
+    sin usar nuestro cliente.
+
+    Un parámetro que la operación no acepta se rechaza en vez de ignorarse: casi siempre
+    es una confusión, y silenciarlo haría creer que se aplicó.
+
+    Args:
+        header: Header del pedido, ya deserializado.
+        operation: La operación, ya validada.
+
+    Returns:
+        Los parámetros pedidos, o un diccionario vacío si no vinieron.
+
+    Raises:
+        messages.RequestError: `BAD_REQUEST` si no es un objeto o trae un parámetro ajeno
+            a la operación.
+    """
+    parameters = header.get("params", {})
+
+    if not isinstance(parameters, dict):
+        raise messages.RequestError(messages.BAD_REQUEST, "'params' debe ser un objeto")
+
+    accepted = config.OPERATION_PARAMETERS[operation]
+    for name in parameters:
+        if name not in accepted:
+            detail = (
+                f"acepta: {', '.join(accepted)}" if accepted else "no acepta parámetros"
+            )
+            raise messages.RequestError(
+                messages.BAD_REQUEST,
+                f"'{name}' no es un parámetro de '{operation}'; {detail}",
+            )
+
+    return parameters
+
+
+def safe_filename(header: dict[str, Any]) -> str:
+    """Lee el nombre del archivo del pedido, dejándolo seguro para usar como ruta.
+
+    El nombre lo elige el cliente, así que **no se puede confiar en él**. Un valor como
+    `../../etc/passwd` construiría una ruta fuera del directorio del trabajo.
+    `Path().name` se queda solo con el último componente, lo que elimina esa posibilidad
+    de raíz en lugar de intentar detectar los casos peligrosos uno por uno.
+
+    Args:
+        header: Header del pedido, ya deserializado.
+
+    Returns:
+        El nombre del archivo, sin ninguna parte de ruta.
+
+    Raises:
+        messages.RequestError: `BAD_REQUEST` si falta o no queda un nombre usable;
+            `INVALID_IMAGE` si la extensión no está soportada.
+    """
+    raw_name = header.get("filename")
+
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        raise messages.RequestError(
+            messages.BAD_REQUEST, "falta el campo 'filename' o está vacío"
+        )
+
+    name = Path(raw_name).name
+    if not name or name in (".", ".."):
+        raise messages.RequestError(
+            messages.BAD_REQUEST, f"'{raw_name}' no es un nombre de archivo válido"
+        )
+
+    if Path(name).suffix.lower() not in config.SUPPORTED_EXTENSIONS:
+        supported = ", ".join(sorted(config.SUPPORTED_EXTENSIONS))
+        raise messages.RequestError(
+            messages.INVALID_IMAGE,
+            f"la extensión de '{name}' no está soportada; se aceptan: {supported}",
+        )
+
+    return name
+
+
+def require_non_empty_image(payload_size: int) -> None:
+    """Verifica que el envío traiga efectivamente una imagen.
+
+    El límite superior no se controla acá: lo aplica `dispatch` sobre todos los pedidos,
+    porque un payload excesivo obliga además a cortar la conexión.
+
+    Args:
+        payload_size: Bytes declarados en el header.
+
+    Returns:
+        None.
+
+    Raises:
+        messages.RequestError: `BAD_REQUEST` si el envío viene sin contenido.
+    """
+    if payload_size == 0:
+        raise messages.RequestError(
+            messages.BAD_REQUEST, "un envío tiene que traer una imagen"
+        )
+
+
 # ─────────────────────────── funciones auxiliares ───────────────────────────
+
+async def save_upload(
+    reader: asyncio.StreamReader, payload_size: int, destination: Path
+) -> None:
+    """Vuelca el payload del pedido en un archivo, bloque por bloque.
+
+    No acumula la imagen en memoria: la escribe a medida que llega. Con muchos clientes
+    subiendo archivos grandes, esa es la diferencia entre usar unos kilobytes por conexión
+    y usar el tamaño entero de cada imagen.
+
+    Args:
+        reader: Stream de lectura de la conexión.
+        payload_size: Cuántos bytes leer, según lo declarado en el header.
+        destination: Dónde escribir. Su directorio se crea si no existe.
+
+    Returns:
+        None.
+
+    Raises:
+        asyncio.IncompleteReadError: Si la conexión se corta antes de completar los bytes
+            anunciados. El archivo parcial queda en disco: limpiarlo le toca a quien
+            llama, que es el que sabe qué más hay que deshacer.
+        OSError: Si no se puede crear el directorio o escribir el archivo.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(destination, "wb") as image_file:
+        async for chunk in protocol.stream_payload(reader, payload_size):
+            image_file.write(chunk)
+
+
 
 
 async def discard_payload(reader: asyncio.StreamReader, payload_size: int) -> None:
