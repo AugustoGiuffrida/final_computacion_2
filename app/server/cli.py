@@ -128,9 +128,12 @@ def install_shutdown_handlers(stop_requested: asyncio.Event) -> None:
     Returns:
         None.
     """
+    # El event loop guarda una cola de tareas listas para avanzar y un registro de qué
+    # está esperando cada corrutina suspendida. `add_signal_handler` es método suyo.
     loop = asyncio.get_running_loop()
 
     for signal_number in (signal.SIGINT, signal.SIGTERM):
+        # Reemplaza el comportamiento por defecto de la señal, que sería matar el proceso.
         loop.add_signal_handler(signal_number, stop_requested.set)
 
 
@@ -146,6 +149,7 @@ async def run_server(arguments: argparse.Namespace) -> None:
     Raises:
         OSError: Si no se puede abrir el socket de escucha.
     """
+    # Bandera que despierta a las corrutinas suspendidas en wait() cuando pasa a True.
     stop_requested = asyncio.Event()
     install_shutdown_handlers(stop_requested)
 

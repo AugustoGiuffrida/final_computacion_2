@@ -40,7 +40,7 @@ class ImageServer:
 
     Attributes:
         host: Dirección en la que escucha. `None` significa todas las interfaces
-            disponibles, IPv4 e IPv6 a la vez (socket dual-stack).
+            disponibles: abre un socket por familia, IPv4 e IPv6, en el mismo puerto.
         port: Puerto en el que escucha.
         connected_clients: Cuántas conexiones hay abiertas en este momento.
     """
@@ -64,12 +64,16 @@ class ImageServer:
     # ─────────────────────── ciclo de vida ───────────────────────
 
     async def start(self) -> None:
-        """Abre el socket de escucha y empieza a aceptar conexiones.
+        """Abre los sockets de escucha y empieza a aceptar conexiones.
 
         `asyncio.start_server` hace por debajo la secuencia completa de un servidor TCP
-        —crear el socket, reclamar la dirección con `bind`, ponerlo en modo pasivo con
-        `listen`— y deja corriendo el bucle de `accept` dentro del event loop. Por cada
-        conexión aceptada crea una tarea nueva que ejecuta `handle_client`.
+        —crear el socket, ajustar sus opciones, reclamar la dirección con `bind`, ponerlo
+        en modo pasivo con `listen`— y deja corriendo el bucle de `accept` dentro del
+        event loop. Por cada conexión aceptada crea una tarea nueva que ejecuta
+        `handle_client`.
+
+        Sin un host concreto abre **un socket por familia**, IPv4 e IPv6, sobre el mismo
+        puerto. Con una dirección concreta abre solo el de la familia que corresponda.
 
         Returns:
             None. Al volver, el servidor ya está aceptando conexiones.
@@ -79,11 +83,14 @@ class ImageServer:
         """
         self._server = await asyncio.start_server(
             self.handle_client, self.host, self.port
-        )
+        ) # host=None hace que getaddrinfo devuelva dos resultados(IPv4 (0.0.0.0) y la de IPv6 (::))
 
         for listening_socket in self._server.sockets:
             address = listening_socket.getsockname()
-            logger.info("escuchando en %s", format_address(address))
+            logger.info(
+                "escuchando en %s (%s)",
+                format_address(address), listening_socket.family.name,
+            )
 
     @property
     def listening_port(self) -> int:
@@ -93,14 +100,14 @@ class ImageServer:
         que elija uno libre: recién después de abrir el socket se sabe cuál fue.
 
         Returns:
-            El puerto asignado.
+            El puerto del primer socket de escucha.
 
         Raises:
             RuntimeError: Si todavía no se llamó a `start`.
         """
         if self._server is None or not self._server.sockets:
             raise RuntimeError("el servidor no está escuchando: falta llamar a start()")
-        return int(self._server.sockets[0].getsockname()[1])
+        return int(self._server.sockets[0].getsockname()[1]) #los dos escuchan en el mismo puerto
 
     async def stop(self) -> None:
         """Deja de aceptar conexiones y espera a que se cierren las abiertas.

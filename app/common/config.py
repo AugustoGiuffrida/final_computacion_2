@@ -19,8 +19,8 @@ DEFAULT_HOST: Final[str] = "localhost" #Servidor al que se conecta el cliente si
 
 DEFAULT_PORT: Final[int] = 9000 #Puerto alto a propósito: los menores a 1024 requieren privilegios de root.
 
-# None le dice a asyncio.start_server que escuche en todas las interfaces disponibles,
-# tanto IPv4 como IPv6: es el socket dual-stack.
+# None le dice a asyncio.start_server que escuche en todas las interfaces disponibles.
+# Abre un socket por familia: uno AF_INET y otro AF_INET6, ambos en el mismo puerto.
 LISTEN_ON_ALL_INTERFACES: Final[None] = None
 
 # ────────────────────────── almacenamiento ──────────────────────────
