@@ -81,6 +81,30 @@ ERROR_EXPLANATIONS: Final[dict[str, str]] = {
 }
 
 
+class RequestError(Exception):
+    """El servidor no puede atender un pedido, con el código que lo explica.
+
+    Es la contraparte de `ServerError`: aquella la levanta el **cliente** cuando recibe un
+    mensaje de error; esta la levanta el **servidor** cuando necesita enviarlo. Las dos
+    llevan el código además del texto, para que quien las atrape pueda decidir según el
+    caso en vez de interpretar un mensaje en prosa.
+
+    No es un error de comunicación: el mensaje llegó bien y se entendió, pero no se puede
+    responder lo que pide. Por eso **no cierra la conexión**: el cliente puede seguir
+    haciendo pedidos.
+
+    Attributes:
+        code: Uno de los códigos de este módulo.
+        detail: Explicación para el usuario.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        """Construye el error con su código y su explicación."""
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}")
+
+
 class ServerError(Exception):
     """El servidor respondió un mensaje de tipo `error`.
 
