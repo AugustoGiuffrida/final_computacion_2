@@ -124,7 +124,7 @@ Estados expuestos al cliente: `QUEUED`, `PROCESSING`, `DONE`, `ERROR`.
 
 ### Servidor
 - Acepta N clientes concurrentes (asyncio, TCP), **escuchando en IPv4 e IPv6 a la vez**
-  mediante un socket dual-stack.
+  mediante un socket de escucha por familia, ambos sobre el mismo puerto.
 - Valida la **forma** de cada solicitud y guarda el original en el almacenamiento
   compartido. **Nunca abre la imagen**: para el servidor son bytes.
 - Le pide al proceso de ingreso que la revise y espera su confirmación; solo encola en

@@ -137,7 +137,8 @@ apenas está listo.
 
 Es el único punto de contacto de los clientes y **la pieza que nunca debe bloquearse**.
 Atiende N conexiones concurrentes sobre un solo hilo con asyncio, escuchando en un
-**socket dual-stack** que acepta clientes IPv4 e IPv6 sobre el mismo puerto.
+**socket por familia** —uno IPv4 y otro IPv6— sobre el mismo puerto, de modo que acepta
+clientes de las dos.
 
 Sus responsabilidades:
 
@@ -481,35 +482,46 @@ final_comp2/
 ├── docs/
 ├── app/
 │   ├── common/
-│   │   ├── protocol.py      # framing (pack/unpack de frames), tipos de mensaje,
-│   │   │                    #   constantes — único lugar donde se define el protocolo
-│   │   └── config.py        # rutas de storage, límites (tamaño máx.), defaults
+│   │   ├── protocol.py      # framing sobre TCP: delimitar mensajes. No sabe nada
+│   │   │                    #   de la aplicación                              [hecho]
+│   │   ├── messages.py      # catálogo del protocolo: tipos de mensaje, estados
+│   │   │                    #   y códigos de error                            [hecho]
+│   │   └── config.py        # rutas, límites y valores por defecto             [hecho]
 │   ├── client/
-│   │   └── client.py        # argparse + asyncio streams; una función por acción
+│   │   ├── __main__.py      # punto de entrada de `python -m app.client`       [hecho]
+│   │   ├── cli.py           # argparse, validación y despacho de la acción     [hecho]
+│   │   ├── session.py       # la conexión y un método por pedido               [hecho]
+│   │   ├── console.py       # presentación del resultado de cada acción        [hecho]
+│   │   └── formatting.py    # colores, tamaños y fechas                        [hecho]
 │   ├── server/
-│   │   ├── cli.py           # argparse, arranque: lanza el proceso de ingreso, recupera trabajos
-│   │   │                    #   en curso, instala manejo de señales, inicia el loop
-│   │   ├── server.py        # asyncio.start_server + un handler por tipo de mensaje
-│   │   ├── registry.py      # resolución de trabajos: índice en memoria + lecturas
-│   │   │                    #   a SQLite (solo lectura)
+│   │   ├── __main__.py      # punto de entrada de `python -m app.server`       [hecho]
+│   │   ├── cli.py           # argparse, registro de actividad y apagado        [hecho]
+│   │   ├── server.py        # asyncio.start_server, handler y despachador      [hecho]
+│   │   ├── registry.py      # resolución de trabajos: índice en memoria +
+│   │   │                    #   lecturas a SQLite                          [pendiente]
 │   │   ├── jobs.py          # puente con Celery: encolar, consultar estado,
-│   │   │                    #   corrutina de monitoreo de trabajos en vuelo
+│   │   │                    #   monitoreo de trabajos en vuelo             [pendiente]
 │   │   ├── ipc.py           # las dos colas, la bomba de respuestas y la
-│   │   │                    #   supervisión del proceso hijo
-│   │   └── intake.py        # proceso hijo: verificación de imágenes, hash,
-│   │                        #   deduplicación y escritura de SQLite
+│   │   │                    #   supervisión del proceso hijo               [pendiente]
+│   │   └── intake.py        # proceso hijo: verificación, hash, deduplicación
+│   │                        #   y escritura de SQLite                      [pendiente]
 │   └── worker/
-│       ├── celery_app.py    # instancia y configuración de Celery
-│       └── tasks.py         # tareas Pillow/OpenCV, una por operación + sanitize
+│       ├── celery_app.py    # instancia y configuración de Celery          [pendiente]
+│       └── tasks.py         # tareas Pillow/OpenCV, una por operación      [pendiente]
+├── tests/                   # pruebas sobre `unittest`, una por módulo
 ├── storage/                 # volumen compartido (uploads/, results/)
-├── docker-compose.yml
-├── Dockerfile
+├── docker-compose.yml                                                      [pendiente]
+├── Dockerfile                                                              [pendiente]
 └── requirements.txt
 ```
 
 **Regla de dependencias**: `client` y `server` solo comparten `common/`; `worker` no
 importa nada del servidor (solo `common/config`). Esto garantiza que cada componente
 pueda desplegarse por separado, que es la condición de un sistema distribuido.
+
+Dentro de `common/`, `protocol.py` no importa a `messages.py`: el framing resuelve cómo
+se delimita un mensaje y no necesita saber qué mensajes existen. La dependencia va en un
+solo sentido, y es lo que permite cambiar el catálogo de mensajes sin tocar el framing.
 
 ## 9. Flujo completo de un trabajo
 
@@ -541,7 +553,7 @@ desenlaces y lo que se persiste en cada uno, está en la sección 4.3.
 
 | Requisito obligatorio | Dónde se cumple |
 |---|---|
-| Sockets, clientes múltiples concurrentes | `server.py` — `asyncio.start_server` sobre TCP, dual-stack IPv4/IPv6 |
+| Sockets, clientes múltiples concurrentes | `server.py` — `asyncio.start_server` sobre TCP, escuchando en IPv4 e IPv6 |
 | Mecanismos de IPC | dos `mp.Queue` (pedidos y respuestas) entre servidor e `intake.py` |
 | Asincronismo de I/O | asyncio en el servidor y en el cliente (streams en ambos) |
 | Cola de tareas distribuidas | Celery + Redis, tareas en `tasks.py` |
@@ -553,16 +565,3 @@ desenlaces y lo que se persiste en cada uno, está en la sección 4.3.
 | Base de datos | SQLite, escrita por el proceso de ingreso |
 | Celery para tareas en paralelo | workers escalables + `sanitize` encadenado |
 | Entorno visual | Flower, panel web de la cola (sección 4.7, opcional) |
-
-
-## NFS docker
-
-´´´sh
-volumes:
-  nfs_shared_volume:
-    driver: local
-    driver_opts:
-      type: "nfs"
-      o: "addr=192.168.1.100,rw,noatime,nolock"
-      device: ":/ruta/en/el/servidor/nfs"
-´´´

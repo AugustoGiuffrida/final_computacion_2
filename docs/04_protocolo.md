@@ -718,7 +718,7 @@ Durante ese lapso puede transportar varios pedidos.
 
 **Independiente de la familia de direcciones.** El protocolo funciona igual sobre IPv4 y
 sobre IPv6: nada en el formato de los mensajes depende de la familia. El servidor escucha
-en un socket dual-stack y atiende a ambas por el mismo puerto.
+con un socket por familia y atiende a ambas por el mismo puerto.
 
 **Límites configurables**: tamaño máximo de header (64 KB) y de payload (por defecto
 25 MB). Ambos se verifican **antes** de leer, para que un valor absurdo en el prefijo no

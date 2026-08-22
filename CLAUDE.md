@@ -12,7 +12,10 @@ oralmente. El desarrollo debe hacerse de forma incremental, con commits frecuent
 
 ## 1. Estado actual — LEER ANTES DE ESCRIBIR CÓDIGO
 
-La documentación de diseño está **completa**. El código **todavía no empezó**.
+La documentación de diseño está **completa**. El código va por la primera etapa: el
+cliente entero y el proceso principal del servidor, que acepta conexiones, lee mensajes
+respetando el framing y despacha los pedidos. Ningún pedido se atiende todavía: los cuatro
+responden un error de "no implementado", porque necesitan componentes sin aprobar.
 
 El profesor aprueba el proyecto **por partes**. Hasta ahora aprobó:
 
@@ -48,11 +51,22 @@ contenido de la carta.
 Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
 (Ethernet). Lo nuestro son mensajes de **capa de aplicación**. Misma idea, otra capa.
 
-### Próximos pasos acordados
+### Lo que ya está escrito
 
-1. `app/common/protocol.py` + `app/common/config.py` (mínimo imprescindible).
-2. `app/client/client.py` — CLI completa.
-3. `app/server/cli.py` + `app/server/server.py` — proceso principal con `asyncio`.
+1. `app/common/` — `protocol.py` (framing), `messages.py` (catálogo) y `config.py`.
+2. `app/client/` — CLI completa: `cli.py`, `session.py`, `console.py`, `formatting.py`.
+3. `app/server/` — `cli.py` (arranque, señales) y `server.py` (handler y despachador).
+4. `tests/` — 51 pruebas sobre `unittest`, con servidores reales en localhost.
+
+### Próximos pasos, en este orden
+
+Cada uno agrega un pedido del protocolo, de menor a mayor dependencia:
+
+1. `history` — el más simple, no necesita estado.
+2. `submit` — recibir la imagen, guardarla, generar el `job_id`.
+3. `status` y `download` — contra el índice en memoria.
+
+Todos requieren aprobación previa de los componentes que involucran.
 
 ---
 
@@ -141,8 +155,11 @@ No re-litigarlas sin motivo; están justificadas en los documentos.
   admite muchos lectores; la restricción es solo sobre escritores.
 - **Redis es estado vivo y efímero** (expira a las 24 h); **SQLite es la verdad
   permanente**. Por eso una descarga nunca consulta Redis.
-- **Dual-stack IPv4/IPv6** en el servidor: la cátedra dedicó material a IPv6 y sostenerlo
-  no cuesta trabajo extra.
+- **IPv4 e IPv6 a la vez** en el servidor: la cátedra dedicó material a IPv6 y sostenerlo
+  no cuesta trabajo extra. Con `host=None`, `asyncio.start_server` abre **un socket por
+  familia** y activa `IPV6_V6ONLY`; no es el dual-stack de un solo socket que enseñó la
+  cátedra. Se probó construir el socket a mano para lograr eso y se descartó por
+  simplicidad (queda en el historial de git).
 
 ## 6. Decisiones descartadas — no reintroducir
 
@@ -277,6 +294,11 @@ contienen (`payload_size`, `pending_requests`, `shared_volume`).
 ---
 
 ## 8. Cómo trabajar en este repo
+
+**Pruebas con `unittest`, sin dependencias externas.** Se corren con
+`python -m unittest discover -s tests -t .` desde la raíz. Las de red levantan servidores
+reales en un puerto libre de localhost: no se simulan objetos, los mensajes viajan por un
+socket de verdad.
 
 **Commits frecuentes e incrementales.** El enunciado lo pide explícitamente y lo evalúa:
 el profesor quiere ver la evolución, no un volcado final. Commitear aunque no funcione.

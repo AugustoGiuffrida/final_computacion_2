@@ -44,7 +44,7 @@ El cliente **también** ocupa un puerto, pero no lo elige: al conectarse, el sis
 operativo le asigna uno libre del rango alto (puerto *efímero*). No necesita una
 dirección conocida porque nadie lo llama a él; solo necesita una dirección de retorno.
 
-### IPv4, IPv6 y sockets dual-stack
+### IPv4, IPv6 y cómo atender a las dos
 
 Conviven hoy **dos familias de direcciones**. IPv4 usa 32 bits —los clásicos
 `192.168.0.10`, unos 4.300 millones de direcciones, hace años agotadas— e IPv6 usa 128
@@ -55,16 +55,32 @@ Para un socket no son intercambiables: son **familias distintas**, `AF_INET` y
 `AF_INET6`. Un servidor que abre un socket IPv4 simplemente no existe para un cliente que
 llega por IPv6.
 
-La forma de atender a los dos es el **socket dual-stack**: se abre un socket `AF_INET6`
-escuchando en la dirección `::` (el equivalente a `0.0.0.0`, "todas las interfaces") y se
-deja desactivada la opción `IPV6_V6ONLY`. Con eso el sistema operativo acepta también
-conexiones IPv4, presentándolas como direcciones IPv6 mapeadas (`::ffff:192.168.0.10`).
-Un solo socket, un solo puerto, las dos familias.
+Hay **dos maneras** de atender a las dos familias, y conviene saber cuál usamos.
 
-En Python, `asyncio.start_server(handler, host=None, port=9000)` hace exactamente eso:
-con `host=None` abre el servidor en todas las interfaces disponibles de ambas familias.
-Del lado del cliente, `asyncio.open_connection` resuelve el nombre o la dirección y elige
-la familia que corresponda, sin que haya que decidirlo en el código.
+La primera es el **socket dual-stack**: se abre un único socket `AF_INET6` en la
+dirección `::` y se deja *desactivada* la opción `IPV6_V6ONLY`. Con eso el sistema
+operativo acepta también conexiones IPv4 sobre ese mismo socket, presentándolas como
+direcciones IPv6 mapeadas (`::ffff:192.168.0.10`). Un socket, las dos familias.
+
+La segunda es abrir **un socket por familia**: uno `AF_INET` en `0.0.0.0` y otro
+`AF_INET6` en `::`, los dos sobre el mismo puerto. No chocan entre sí porque pertenecen a
+familias distintas.
+
+**Nuestro servidor usa la segunda**, porque es lo que hace `asyncio.start_server` cuando
+se le pasan el host y el puerto. Y asyncio lo hace a propósito: **activa** `IPV6_V6ONLY`
+en el socket IPv6 para desactivar su modo dual. El motivo es la portabilidad — el valor
+por defecto de esa opción varía según el sistema (en Linux suele venir en modo dual, en
+BSD y macOS no), y con un socket por familia el resultado es idéntico en todas partes.
+
+Se puede verificar leyendo `server.sockets`: sin host hay dos entradas, una `AF_INET` y
+otra `AF_INET6`. Con una dirección concreta queda una sola, la de esa familia.
+
+Un detalle del que conviene acordarse: si además se pide el puerto 0 —"elegí uno libre"—
+**cada socket recibe un puerto distinto**. Con un puerto fijo, que es el uso normal, los
+dos comparten el mismo.
+
+Del lado del cliente no hay nada que decidir: `asyncio.open_connection` resuelve el
+nombre o la dirección y elige la familia que corresponda.
 
 Sostener IPv6 no cuesta trabajo adicional y evita que el servicio quede inaccesible en
 redes que ya operan sobre esa familia.
