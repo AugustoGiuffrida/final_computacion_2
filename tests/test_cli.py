@@ -12,8 +12,7 @@ como un `SystemExit`.
 from __future__ import annotations
 
 import argparse
-
-import pytest
+import unittest
 
 from app.client import cli
 
@@ -30,169 +29,205 @@ def parse(*argv: str) -> argparse.Namespace:
     return cli.build_parser().parse_args(list(argv))
 
 
-# ────────────────────────── validadores de valores ──────────────────────────
 
 
-@pytest.mark.parametrize("raw_value", ["0", "65536", "-1", "nueve mil"])
-def test_an_impossible_port_is_rejected(raw_value: str) -> None:
-    """Un puerto fuera de 1-65535, o que no sea un número, no se acepta."""
-    with pytest.raises(argparse.ArgumentTypeError):
-        cli.port_number(raw_value)
+# ──────────────────────── validadores de valores ────────────────────────
 
 
-def test_a_valid_port_is_accepted() -> None:
-    """Un puerto dentro del rango se devuelve como entero."""
-    assert cli.port_number("9000") == 9000
+class ValueValidators(unittest.TestCase):
+    """Conversión y validación de cada valor de la línea de comandos."""
 
 
-@pytest.mark.parametrize("raw_value", ["0", "96", "-5", "mucha"])
-def test_a_quality_outside_the_range_is_rejected(raw_value: str) -> None:
-    """La calidad va de 1 a 95: por encima, JPEG crece sin mejorar."""
-    with pytest.raises(argparse.ArgumentTypeError):
-        cli.quality_level(raw_value)
+
+    def test_an_impossible_port_is_rejected(self) -> None:
+        """Un puerto fuera de 1-65535, o que no sea un número, no se acepta."""
+        for raw_value in ("0", "65536", "-1", "nueve mil"):
+            with self.subTest(raw_value=raw_value):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    cli.port_number(raw_value)
 
 
-def test_a_valid_quality_is_accepted() -> None:
-    """Un nivel de calidad dentro del rango se devuelve como entero."""
-    assert cli.quality_level("80") == 80
+    def test_a_valid_port_is_accepted(self) -> None:
+        """Un puerto dentro del rango se devuelve como entero."""
+        self.assertEqual(cli.port_number("9000"), 9000)
 
 
-@pytest.mark.parametrize("raw_value", ["0", "-3", "dos"])
-def test_a_non_positive_integer_is_rejected(raw_value: str) -> None:
-    """Los tamaños e intensidades tienen que ser mayores que cero."""
-    with pytest.raises(argparse.ArgumentTypeError):
-        cli.positive_integer(raw_value)
+    def test_a_quality_outside_the_range_is_rejected(self) -> None:
+        """La calidad va de 1 a 95: por encima, JPEG crece sin mejorar."""
+        for raw_value in ("0", "96", "-5", "mucha"):
+            with self.subTest(raw_value=raw_value):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    cli.quality_level(raw_value)
 
 
-# ─────────────────────── reglas que dependen de la acción ───────────────────────
+    def test_a_valid_quality_is_accepted(self) -> None:
+        """Un nivel de calidad dentro del rango se devuelve como entero."""
+        self.assertEqual(cli.quality_level("80"), 80)
 
 
-def test_submit_without_a_file_is_rejected() -> None:
-    """`--action submit` sin `--file` no llega a abrir la conexión."""
-    parser = cli.build_parser()
-    arguments = parser.parse_args(["--user", "augusto", "--action", "submit", "--op", "clean"])
-
-    with pytest.raises(SystemExit) as raised:
-        cli.check_action_requirements(parser, arguments)
-
-    assert raised.value.code == cli.EXIT_BAD_USAGE
+    def test_a_non_positive_integer_is_rejected(self) -> None:
+        """Los tamaños e intensidades tienen que ser mayores que cero."""
+        for raw_value in ("0", "-3", "dos"):
+            with self.subTest(raw_value=raw_value):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    cli.positive_integer(raw_value)
 
 
-def test_submit_without_an_operation_is_rejected() -> None:
-    """`--action submit` sin `--op` tampoco alcanza."""
-    parser = cli.build_parser()
-    arguments = parser.parse_args(
-        ["--user", "augusto", "--action", "submit", "--file", "foto.jpg"]
-    )
-
-    with pytest.raises(SystemExit):
-        cli.check_action_requirements(parser, arguments)
 
 
-@pytest.mark.parametrize("action", ["status", "download"])
-def test_consulting_without_a_job_id_is_rejected(action: str) -> None:
-    """Consultar o descargar exige el identificador del trabajo."""
-    parser = cli.build_parser()
-    arguments = parser.parse_args(["--user", "augusto", "--action", action])
-
-    with pytest.raises(SystemExit):
-        cli.check_action_requirements(parser, arguments)
+# ──────────────────────── reglas que dependen de la acción ────────────────────────
 
 
-def test_wait_only_makes_sense_when_submitting() -> None:
-    """`--wait` con una acción que no es `submit` es un error, no algo que se ignore."""
-    parser = cli.build_parser()
-    arguments = parser.parse_args(["--user", "augusto", "--action", "history", "--wait"])
-
-    with pytest.raises(SystemExit):
-        cli.check_action_requirements(parser, arguments)
+class ActionRequirements(unittest.TestCase):
+    """Reglas que argparse no puede expresar y se verifican después de parsear."""
 
 
-def test_a_complete_submit_passes_the_checks() -> None:
-    """Una línea de comandos completa no levanta ningún error."""
-    parser = cli.build_parser()
-    arguments = parser.parse_args([
-        "--user", "augusto", "--action", "submit", "--file", "foto.jpg", "--op", "anonymize",
-    ])
 
-    cli.check_action_requirements(parser, arguments)  # no debe lanzar nada
+    def test_submit_without_a_file_is_rejected(self) -> None:
+        """`--action submit` sin `--file` no llega a abrir la conexión."""
+        parser = cli.build_parser()
+        arguments = parser.parse_args(["--user", "augusto", "--action", "submit", "--op", "clean"])
 
+        with self.assertRaises(SystemExit) as raised:
+            cli.check_action_requirements(parser, arguments)
 
-# ────────────────────── parámetros de la operación ──────────────────────
-
-
-def test_only_the_parameters_that_were_written_are_sent() -> None:
-    """Lo que el usuario no escribió no viaja: el servidor aplica su valor por defecto."""
-    parser = cli.build_parser()
-    arguments = parser.parse_args([
-        "--user", "augusto", "--action", "submit", "--file", "foto.jpg",
-        "--op", "anonymize", "--mode", "pixelate",
-    ])
-
-    parameters = cli.collect_operation_parameters(parser, arguments, "anonymize")
-
-    assert parameters == {"mode": "pixelate"}
+        self.assertEqual(raised.exception.code, cli.EXIT_BAD_USAGE)
 
 
-def test_all_the_parameters_of_an_operation_can_travel_together() -> None:
-    """`sanitize` acepta los cuatro parámetros y los cuatro llegan."""
-    parser = cli.build_parser()
-    arguments = parser.parse_args([
-        "--user", "augusto", "--action", "submit", "--file", "foto.jpg", "--op", "sanitize",
-        "--mode", "blur", "--strength", "15", "--quality", "80", "--max-size", "1920",
-    ])
+    def test_submit_without_an_operation_is_rejected(self) -> None:
+        """`--action submit` sin `--op` tampoco alcanza."""
+        parser = cli.build_parser()
+        arguments = parser.parse_args(
+            ["--user", "augusto", "--action", "submit", "--file", "foto.jpg"]
+        )
 
-    parameters = cli.collect_operation_parameters(parser, arguments, "sanitize")
-
-    assert parameters == {"mode": "blur", "strength": 15, "quality": 80, "max_size": 1920}
+        with self.assertRaises(SystemExit):
+            cli.check_action_requirements(parser, arguments)
 
 
-def test_a_parameter_that_the_operation_does_not_accept_is_an_error() -> None:
-    """Pasar `--mode` a `clean` se avisa, en vez de ignorarlo en silencio.
+    def test_consulting_without_a_job_id_is_rejected(self) -> None:
+        """Consultar o descargar exige el identificador del trabajo."""
+        for action in ("status", "download"):
+            with self.subTest(action=action):
+                parser = cli.build_parser()
+                arguments = parser.parse_args(["--user", "augusto", "--action", action])
 
-    Silenciarlo haría creer que se aplicó, que es la peor de las dos opciones.
-    """
-    parser = cli.build_parser()
-    arguments = parser.parse_args([
-        "--user", "augusto", "--action", "submit", "--file", "foto.jpg",
-        "--op", "clean", "--mode", "blur",
-    ])
-
-    with pytest.raises(SystemExit):
-        cli.collect_operation_parameters(parser, arguments, "clean")
+                with self.assertRaises(SystemExit):
+                    cli.check_action_requirements(parser, arguments)
 
 
-def test_an_operation_without_parameters_sends_none() -> None:
-    """`inspect` no acepta parámetros y no envía ninguno."""
-    parser = cli.build_parser()
-    arguments = parser.parse_args([
-        "--user", "augusto", "--action", "submit", "--file", "foto.jpg", "--op", "inspect",
-    ])
+    def test_wait_only_makes_sense_when_submitting(self) -> None:
+        """`--wait` con una acción que no es `submit` es un error, no algo que se ignore."""
+        parser = cli.build_parser()
+        arguments = parser.parse_args(["--user", "augusto", "--action", "history", "--wait"])
 
-    assert cli.collect_operation_parameters(parser, arguments, "inspect") == {}
-
-
-# ────────────────────────── valores por defecto ──────────────────────────
+        with self.assertRaises(SystemExit):
+            cli.check_action_requirements(parser, arguments)
 
 
-def test_the_defaults_come_from_the_configuration() -> None:
-    """Sin host ni puerto se usan los del módulo de configuración, no números sueltos."""
-    from app.common import config
+    def test_a_complete_submit_passes_the_checks(self) -> None:
+        """Una línea de comandos completa no levanta ningún error."""
+        parser = cli.build_parser()
+        arguments = parser.parse_args([
+            "--user", "augusto", "--action", "submit", "--file", "foto.jpg", "--op", "anonymize",
+        ])
 
-    arguments = parse("--user", "augusto", "--action", "history")
-
-    assert arguments.host == config.DEFAULT_HOST
-    assert arguments.port == config.DEFAULT_PORT
-    assert arguments.timeout == config.DEFAULT_WAIT_TIMEOUT_SECONDS
-
-
-def test_the_action_is_mandatory() -> None:
-    """Sin `--action` no hay nada que hacer: el cliente ejecuta una acción y termina."""
-    with pytest.raises(SystemExit):
-        parse("--user", "augusto")
+        cli.check_action_requirements(parser, arguments)  # no debe lanzar nada
 
 
-def test_the_user_is_mandatory() -> None:
-    """Sin `--user` no se puede hacer nada: todo pedido lo lleva."""
-    with pytest.raises(SystemExit):
-        parse("--action", "history")
+
+
+# ──────────────────────── parámetros de la operación ────────────────────────
+
+
+class OperationParameters(unittest.TestCase):
+    """Armado del diccionario de parámetros que viaja en el pedido."""
+
+
+
+    def test_only_the_parameters_that_were_written_are_sent(self) -> None:
+        """Lo que el usuario no escribió no viaja: el servidor aplica su valor por defecto."""
+        parser = cli.build_parser()
+        arguments = parser.parse_args([
+            "--user", "augusto", "--action", "submit", "--file", "foto.jpg",
+            "--op", "anonymize", "--mode", "pixelate",
+        ])
+
+        parameters = cli.collect_operation_parameters(parser, arguments, "anonymize")
+
+        self.assertEqual(parameters, {"mode": "pixelate"})
+
+
+    def test_all_the_parameters_of_an_operation_can_travel_together(self) -> None:
+        """`sanitize` acepta los cuatro parámetros y los cuatro llegan."""
+        parser = cli.build_parser()
+        arguments = parser.parse_args([
+            "--user", "augusto", "--action", "submit", "--file", "foto.jpg", "--op", "sanitize",
+            "--mode", "blur", "--strength", "15", "--quality", "80", "--max-size", "1920",
+        ])
+
+        parameters = cli.collect_operation_parameters(parser, arguments, "sanitize")
+
+        self.assertEqual(parameters, {"mode": "blur", "strength": 15, "quality": 80, "max_size": 1920})
+
+
+    def test_a_parameter_that_the_operation_does_not_accept_is_an_error(self) -> None:
+        """Pasar `--mode` a `clean` se avisa, en vez de ignorarlo en silencio.
+
+        Silenciarlo haría creer que se aplicó, que es la peor de las dos opciones.
+        """
+        parser = cli.build_parser()
+        arguments = parser.parse_args([
+            "--user", "augusto", "--action", "submit", "--file", "foto.jpg",
+            "--op", "clean", "--mode", "blur",
+        ])
+
+        with self.assertRaises(SystemExit):
+            cli.collect_operation_parameters(parser, arguments, "clean")
+
+
+    def test_an_operation_without_parameters_sends_none(self) -> None:
+        """`inspect` no acepta parámetros y no envía ninguno."""
+        parser = cli.build_parser()
+        arguments = parser.parse_args([
+            "--user", "augusto", "--action", "submit", "--file", "foto.jpg", "--op", "inspect",
+        ])
+
+        self.assertEqual(cli.collect_operation_parameters(parser, arguments, "inspect"), {})
+
+
+
+
+# ──────────────────────── valores por defecto ────────────────────────
+
+
+class Defaults(unittest.TestCase):
+    """Valores por defecto y argumentos obligatorios."""
+
+
+
+    def test_the_defaults_come_from_the_configuration(self) -> None:
+        """Sin host ni puerto se usan los del módulo de configuración, no números sueltos."""
+        from app.common import config
+
+        arguments = parse("--user", "augusto", "--action", "history")
+
+        self.assertEqual(arguments.host, config.DEFAULT_HOST)
+        self.assertEqual(arguments.port, config.DEFAULT_PORT)
+        self.assertEqual(arguments.timeout, config.DEFAULT_WAIT_TIMEOUT_SECONDS)
+
+
+    def test_the_action_is_mandatory(self) -> None:
+        """Sin `--action` no hay nada que hacer: el cliente ejecuta una acción y termina."""
+        with self.assertRaises(SystemExit):
+            parse("--user", "augusto")
+
+
+    def test_the_user_is_mandatory(self) -> None:
+        """Sin `--user` no se puede hacer nada: todo pedido lo lleva."""
+        with self.assertRaises(SystemExit):
+            parse("--action", "history")
+
+
+if __name__ == "__main__":
+    unittest.main()
