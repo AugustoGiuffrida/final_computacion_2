@@ -170,23 +170,6 @@ class RequestHandling(ServerTestCase):
 
 
 
-    async def test_a_request_without_a_handler_yet_says_so(self) -> None:
-        """Un pedido que el protocolo define pero el servidor todavía no atiende.
-
-        Es el estado esperado de esta etapa: el tipo se reconoce —no es `BAD_REQUEST`—
-        pero su lógica llega cuando se aprueben los componentes que necesita.
-        """
-        server = await self.running_server()
-        client = await self.connected_client(server)
-
-        with self.assertRaises(messages.ServerError) as raised:
-            await client.status("a3f7b2c1")
-
-        self.assertEqual(raised.exception.code, messages.INTERNAL)
-        self.assertIn("status", raised.exception.message)
-
-
-
     async def test_an_unknown_request_type_is_rejected(self) -> None:
         """Un tipo de mensaje que no existe se rechaza con BAD_REQUEST."""
         server = await self.running_server()
@@ -204,8 +187,8 @@ class RequestHandling(ServerTestCase):
         await writer.wait_closed()
 
 
-    async def test_the_payload_of_an_unimplemented_request_is_consumed(self) -> None:
-        """Un pedido sin implementar que traiga payload no desfasa el diálogo.
+    async def test_the_payload_of_a_rejected_request_is_consumed(self) -> None:
+        """Un pedido rechazado que traiga payload no desfasa el diálogo.
 
         Los bytes ya vienen en camino, así que hay que sacarlos del socket aunque el
         pedido se rechace. Si quedaran ahí, el `receive_header` siguiente los tomaría
@@ -216,14 +199,15 @@ class RequestHandling(ServerTestCase):
             "127.0.0.1", server.listening_port
         )
 
-        # `status` todavía no está implementado, y encima se le manda un payload.
+        # Un `status` de un trabajo inexistente, y encima con un payload que no le
+        # corresponde llevar.
         await protocol.send_message(writer, {
             messages.TYPE_FIELD: messages.STATUS,
             "user": "augusto",
-            "job_id": "a3f7b2c1",
+            "job_id": "no-existe",
         }, b"x" * 200_000)
         rejected = await protocol.receive_header(reader)
-        self.assertEqual(rejected["code"], messages.INTERNAL)
+        self.assertEqual(rejected["code"], messages.JOB_NOT_FOUND)
 
         # El pedido siguiente sobre la misma conexión tiene que entenderse bien.
         await protocol.send_message(writer, {
@@ -587,6 +571,218 @@ class SubmitRequest(ServerTestCase):
         response = await self.submit_with_filename(server, "script.sh")
 
         self.assertEqual(response["code"], messages.INVALID_IMAGE)
+
+# ──────────────────────── consulta y descarga ────────────────────────
+
+
+class StatusRequest(ServerTestCase):
+    """El pedido `status`: en qué anda un trabajo."""
+
+    async def test_a_queued_job_reports_its_state(self) -> None:
+        """Un trabajo recién aceptado figura encolado, sin datos de resultado."""
+        server = await self.running_server()
+        job = registry.new_job("augusto", "clean", {}, "foto.jpg")
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+        response = await client.status(job.job_id)
+
+        self.assertEqual(response["status"], messages.QUEUED)
+        self.assertNotIn("has_output", response)
+        self.assertNotIn("result", response)
+
+    async def test_a_finished_job_reports_what_it_produced(self) -> None:
+        """Al terminar, la respuesta dice si hay archivo y trae los datos de la operación."""
+        server = await self.running_server()
+        job = registry.new_job("augusto", "anonymize", {}, "foto.jpg")
+        job.status = messages.DONE
+        job.output_path = self.working_directory / "out.jpg"
+        job.result = {"faces_detected": 3}
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+        response = await client.status(job.job_id)
+
+        self.assertEqual(response["status"], messages.DONE)
+        self.assertTrue(response["has_output"])
+        self.assertEqual(response["result"], {"faces_detected": 3})
+
+    async def test_an_operation_without_output_says_so(self) -> None:
+        """`inspect` termina bien pero no deja archivo: el cliente no debe pedir descarga."""
+        server = await self.running_server()
+        job = registry.new_job("augusto", "inspect", {}, "foto.jpg")
+        job.status = messages.DONE
+        job.result = {"gps": {"lat": -32.889, "lon": -68.845}}
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+        response = await client.status(job.job_id)
+
+        self.assertFalse(response["has_output"])
+        self.assertIn("gps", response["result"])
+
+    async def test_a_failed_job_reports_the_reason(self) -> None:
+        """Si falló, viaja el motivo en lugar de los datos del resultado."""
+        server = await self.running_server()
+        job = registry.new_job("augusto", "clean", {}, "rota.jpg")
+        job.status = messages.FAILED
+        job.error = "imagen corrupta"
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+        response = await client.status(job.job_id)
+
+        self.assertEqual(response["error"], "imagen corrupta")
+
+    async def test_an_unknown_job_is_not_found(self) -> None:
+        """Un identificador inventado no existe."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.status("no-existe")
+
+        self.assertEqual(raised.exception.code, messages.JOB_NOT_FOUND)
+
+    async def test_a_job_of_another_user_is_forbidden(self) -> None:
+        """La regla de propiedad se aplica también al consultar."""
+        server = await self.running_server()
+        job = registry.new_job("ana", "clean", {}, "foto.jpg")
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)  # se conecta como augusto
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.status(job.job_id)
+
+        self.assertEqual(raised.exception.code, messages.FORBIDDEN)
+
+
+class DownloadRequest(ServerTestCase):
+    """El pedido `download`: obtener el archivo que produjo un trabajo."""
+
+    def a_finished_job(self, content: bytes = b"resultado") -> registry.Job:
+        """Deja un trabajo terminado, con su archivo de salida ya escrito.
+
+        Hace falta inyectarlo porque nada procesa los trabajos todavía: sin workers,
+        ninguno llega por sí solo a `DONE`.
+
+        Args:
+            content: Bytes a escribir en el archivo de salida.
+
+        Returns:
+            El trabajo terminado, listo para agregar al registro.
+        """
+        output = self.working_directory / "out.jpg"
+        output.write_bytes(content)
+
+        job = registry.new_job("augusto", "anonymize", {}, "paisaje.jpg")
+        job.status = messages.DONE
+        job.output_path = output
+        return job
+
+    async def test_the_file_arrives_intact(self) -> None:
+        """El archivo llega completo, aunque no entre en un solo bloque."""
+        original = bytes(range(256)) * 1500  # 384.000 bytes: casi seis bloques
+        server = await self.running_server()
+        job = self.a_finished_job(original)
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+        destination = self.working_directory / "descargado.jpg"
+        saved_path, _response = await client.download(job.job_id, destination)
+
+        self.assertEqual(saved_path.read_bytes(), original)
+
+    async def test_the_suggested_name_says_where_it_came_from(self) -> None:
+        """El nombre sugerido combina el original y la operación aplicada."""
+        server = await self.running_server()
+        job = self.a_finished_job()
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+        _path, response = await client.download(
+            job.job_id, self.working_directory / "x.jpg"
+        )
+
+        self.assertEqual(response["filename"], "paisaje_anonymize.jpg")
+        self.assertEqual(response["content_type"], "image/jpeg")
+
+    async def test_a_job_still_running_is_not_ready(self) -> None:
+        """Un trabajo sin terminar no tiene nada para descargar."""
+        server = await self.running_server()
+        job = registry.new_job("augusto", "clean", {}, "foto.jpg")
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.download(job.job_id, self.working_directory / "x.jpg")
+
+        self.assertEqual(raised.exception.code, messages.NOT_READY)
+
+    async def test_an_operation_without_output_cannot_be_downloaded(self) -> None:
+        """`inspect` termina bien pero no genera archivo."""
+        server = await self.running_server()
+        job = registry.new_job("augusto", "inspect", {}, "foto.jpg")
+        job.status = messages.DONE
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.download(job.job_id, self.working_directory / "x.jpg")
+
+        self.assertEqual(raised.exception.code, messages.NO_OUTPUT)
+
+    async def test_a_failed_job_has_nothing_to_download(self) -> None:
+        """Un trabajo que falló terminó, pero no produjo ningún archivo."""
+        server = await self.running_server()
+        job = registry.new_job("augusto", "clean", {}, "rota.jpg")
+        job.status = messages.FAILED
+        job.error = "imagen corrupta"
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.download(job.job_id, self.working_directory / "x.jpg")
+
+        self.assertEqual(raised.exception.code, messages.NO_OUTPUT)
+        self.assertIn("imagen corrupta", raised.exception.message)
+
+    async def test_a_missing_result_file_is_reported_clearly(self) -> None:
+        """El trabajo figura terminado pero su archivo ya no está.
+
+        Pasa cuando la limpieza periódica borró un resultado viejo. Sin este control el
+        envío fallaría con un error de sistema y el cliente vería "el servidor cortó" en
+        vez de una explicación.
+        """
+        server = await self.running_server()
+        job = self.a_finished_job()
+        job.output_path.unlink()  # type: ignore[union-attr]
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.download(job.job_id, self.working_directory / "x.jpg")
+
+        self.assertEqual(raised.exception.code, messages.INTERNAL)
+
+    async def test_a_job_of_another_user_cannot_be_downloaded(self) -> None:
+        """La regla de propiedad se aplica también al descargar."""
+        server = await self.running_server()
+        job = self.a_finished_job()
+        job.user = "ana"
+        server.jobs.add(job)
+
+        client = await self.connected_client(server)  # se conecta como augusto
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.download(job.job_id, self.working_directory / "x.jpg")
+
+        self.assertEqual(raised.exception.code, messages.FORBIDDEN)
 
 # ──────────────────────── familias de direcciones ────────────────────────
 

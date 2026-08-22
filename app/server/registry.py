@@ -24,6 +24,9 @@ class Job:
         created_at: Cuándo se aceptó, en UTC.
         finished_at: Cuándo terminó, o None si sigue en curso.
         error: Motivo del fallo, o None si no falló.
+        result: Datos que produjo la operación —cuántas caras se detectaron, qué
+            metadatos se eliminaron—, o None si todavía no terminó. No entra en el
+            resumen: el historial lista trabajos, no resultados.
         output_path: Dónde quedó el archivo producido, o None si todavía no hay.
     """
 
@@ -36,6 +39,7 @@ class Job:
     created_at: datetime
     finished_at: datetime | None = None
     error: str | None = None
+    result: dict[str, Any] | None = None
     output_path: Path | None = None
 
     def as_summary(self) -> dict[str, Any]:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import shutil
 from pathlib import Path
 from typing import Any
@@ -284,13 +285,10 @@ class ImageServer:
             await self.handle_history(header, payload_size, reader, writer)
         elif request_type == messages.SUBMIT:
             await self.handle_submit(header, payload_size, reader, writer)
+        elif request_type == messages.STATUS:
+            await self.handle_status(header, payload_size, reader, writer)
         else:
-            # `status` y `download` existen en el protocolo pero todavía no se atienden.
-            # Cada uno se irá sumando como un `elif` propio a medida que se implemente.
-            await discard_payload(reader, payload_size)
-            raise messages.RequestError(
-                messages.INTERNAL, f"el servidor todavía no implementa '{request_type}'"
-            )
+            await self.handle_download(header, payload_size, reader, writer)
 
     # ─────────────────────── manejadores de cada pedido ───────────────────────
 
@@ -410,6 +408,135 @@ class ImageServer:
         })
 
 
+    async def handle_status(
+        self,
+        header: dict[str, Any],
+        payload_size: int,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Responde en qué estado está un trabajo y, si terminó, qué produjo.
+
+        Los campos `has_output` y `result` solo aparecen cuando el trabajo terminó bien:
+        el primero le dice al cliente si tiene sentido pedir la descarga, el segundo trae
+        los datos de la operación. Si falló, viaja el motivo en `error`.
+
+        ESTADO: hoy todos los trabajos quedan en `QUEUED`, porque nada los procesa. Las
+        ramas de terminado y fallado están implementadas y probadas para cuando exista la
+        cola de tareas.
+
+        Args:
+            header: Header del pedido.
+            payload_size: Bytes de payload declarados. `status` no lleva ninguno.
+            reader: Stream de lectura, para consumir el payload.
+            writer: Stream de escritura, para responder.
+
+        Returns:
+            None.
+
+        Raises:
+            messages.RequestError: `BAD_REQUEST` si faltan campos, `JOB_NOT_FOUND` si no
+                existe, `FORBIDDEN` si es de otro usuario.
+        """
+        await discard_payload(reader, payload_size)
+
+        user = require_user(header)
+        job_id = require_job_id(header)
+
+        job = self.jobs.find(user, job_id)
+
+        response: dict[str, Any] = {
+            messages.TYPE_FIELD: messages.OK,
+            "job_id": job.job_id,
+            "status": job.status,
+        }
+
+        if job.status == messages.DONE:
+            response["has_output"] = job.output_path is not None
+            response["result"] = job.result or {}
+        elif job.status == messages.FAILED:
+            response["error"] = job.error or ""
+
+        await protocol.send_message(writer, response)
+
+    async def handle_download(
+        self,
+        header: dict[str, Any],
+        payload_size: int,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Envía el archivo que produjo un trabajo.
+
+        Es el pedido inverso al envío: sin payload de ida, con payload de vuelta. El
+        archivo se manda en bloques, así que la memoria no crece con su tamaño.
+
+        Los cuatro controles previos son excluyentes y van del más general al más
+        específico: que el trabajo exista y sea de quien pregunta, que haya terminado,
+        que haya producido un archivo, y que ese archivo siga estando. Cada uno da un
+        error distinto, para que el cliente sepa qué pasó.
+
+        ESTADO: sin nada que procese los trabajos, ninguno llega a `DONE` y en uso normal
+        este pedido siempre responde `NOT_READY`. El camino completo está implementado y
+        se prueba inyectando un trabajo terminado en el registro.
+
+        Args:
+            header: Header del pedido.
+            payload_size: Bytes de payload declarados. `download` no lleva ninguno.
+            reader: Stream de lectura, para consumir el payload.
+            writer: Stream de escritura, para responder y enviar el archivo.
+
+        Returns:
+            None.
+
+        Raises:
+            messages.RequestError: `JOB_NOT_FOUND` o `FORBIDDEN` al resolverlo,
+                `NOT_READY` si sigue en curso, `NO_OUTPUT` si no produce archivo, o
+                `INTERNAL` si el archivo ya no está.
+        """
+        await discard_payload(reader, payload_size)
+
+        user = require_user(header)
+        job_id = require_job_id(header)
+
+        job = self.jobs.find(user, job_id)
+
+        if job.status == messages.FAILED:
+            raise messages.RequestError(
+                messages.NO_OUTPUT,
+                "el trabajo falló y no produjo ningún archivo: "
+                f"{job.error or 'sin motivo registrado'}",
+            )
+        if job.status != messages.DONE:
+            raise messages.RequestError(
+                messages.NOT_READY,
+                f"el trabajo todavía está en {job.status}: no hay nada para descargar",
+            )
+        if job.output_path is None:
+            raise messages.RequestError(
+                messages.NO_OUTPUT,
+                f"'{job.operation}' no genera archivo; su resultado está en la consulta "
+                "de estado",
+            )
+        if not job.output_path.exists():
+            # El trabajo figura terminado pero el archivo no está: lo borró la limpieza
+            # periódica de resultados viejos, o alguien tocó el volumen por fuera. Sin
+            # este control, `send_file` fallaría con un OSError que cerraría la conexión,
+            # y el cliente vería "el servidor cortó" en vez de una explicación.
+            raise messages.RequestError(
+                messages.INTERNAL, "el resultado de ese trabajo ya no está disponible"
+            )
+
+        logger.info("descarga de %s: %s", job.job_id, job.output_path.name)
+
+        await protocol.send_file(writer, {
+            messages.TYPE_FIELD: messages.OK,
+            "job_id": job.job_id,
+            "filename": suggested_download_name(job),
+            "content_type": content_type_of(job.output_path),
+        }, job.output_path)
+
+
 # ──────────────────────── validación de campos comunes ────────────────────────
 
 
@@ -465,6 +592,30 @@ def read_limit(header: dict[str, Any]) -> int:
 
     return min(limit, config.MAX_HISTORY_LIMIT)
 
+
+
+def require_job_id(header: dict[str, Any]) -> str:
+    """Lee el identificador de trabajo del pedido, verificando que esté presente.
+
+    Lo llevan `status` y `download`, así que se valida en un solo lugar.
+
+    Args:
+        header: Header del pedido, ya deserializado.
+
+    Returns:
+        El identificador, sin espacios sobrantes.
+
+    Raises:
+        messages.RequestError: `BAD_REQUEST` si falta, está vacío o no es texto.
+    """
+    job_id = header.get("job_id")
+
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise messages.RequestError(
+            messages.BAD_REQUEST, "falta el campo 'job_id' o está vacío"
+        )
+
+    return job_id.strip()
 
 
 def require_operation(header: dict[str, Any]) -> str:
@@ -595,6 +746,39 @@ def require_non_empty_image(payload_size: int) -> None:
 
 
 # ─────────────────────────── funciones auxiliares ───────────────────────────
+
+def suggested_download_name(job: registry.Job) -> str:
+    """Arma un nombre de archivo legible para el resultado de un trabajo.
+
+    En disco el resultado se llama siempre igual —un nombre interno y uniforme— pero al
+    cliente le sirve más algo que diga de dónde salió: `foto_anonymize.jpg` en lugar de
+    `out.jpg`. Es solo una sugerencia: el cliente puede guardarlo donde indique `-o`.
+
+    Args:
+        job: El trabajo terminado, con su archivo de salida.
+
+    Returns:
+        El nombre sugerido, combinando el nombre original y la operación aplicada.
+    """
+    original = Path(job.filename)
+    output_suffix = job.output_path.suffix if job.output_path else original.suffix
+
+    return f"{original.stem}_{job.operation}{output_suffix}"
+
+
+def content_type_of(file_path: Path) -> str:
+    """Deduce el tipo de contenido de un archivo a partir de su extensión.
+
+    Args:
+        file_path: Ruta del archivo.
+
+    Returns:
+        El tipo MIME, o 'application/octet-stream' si no se puede deducir.
+    """
+    guessed_type, _encoding = mimetypes.guess_type(file_path.name)
+
+    return guessed_type or "application/octet-stream"
+
 
 async def save_upload(
     reader: asyncio.StreamReader, payload_size: int, destination: Path
