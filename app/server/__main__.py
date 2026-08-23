@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 
-from app.server.cli import main
+from app.server.main.cli import main
 
 if __name__ == "__main__":
     sys.exit(main())

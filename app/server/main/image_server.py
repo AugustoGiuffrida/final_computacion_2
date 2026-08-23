@@ -13,17 +13,19 @@ De eso se derivan las dos reglas que este módulo respeta:
   sin leer siguen en el buffer del socket, y el mensaje siguiente los interpretaría como
   su propio prefijo de longitud: el diálogo quedaría desfasado sin forma de detectarlo.
 
-ESTADO: primera etapa. El servidor acepta conexiones, lee los mensajes respetando el
-framing y responde. Todavía no procesa ningún pedido: cada uno recibe un error de "no
-implementado". Los componentes que faltan —el proceso de ingreso, la cola de tareas, la
-base de datos— están diseñados en `docs/` y pendientes de aprobación.
+Acá vive la clase y nada más: la validación de lo que llega está en `incoming.py` y el
+armado de lo que sale en `outgoing.py`.
+
+ESTADO: el proceso principal está completo. Acepta conexiones, respeta el framing y
+resuelve los cuatro pedidos del protocolo contra un índice en memoria. Lo que falta —el
+proceso de ingreso, la cola de tareas, la base de datos— está diseñado en `docs/` y
+pendiente de aprobación.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import mimetypes
 import shutil
 from pathlib import Path
 from typing import Any
@@ -32,14 +34,12 @@ from app.common import config, messages, protocol
 from app.common.messages import (
     BadRequest,
     InternalError,
-    InvalidImage,
     NoOutput,
     NotReady,
     RequestError,
     TooLarge,
-    UnknownOperation,
 )
-from app.server import registry
+from app.server.main import incoming, outgoing, registry
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ class ImageServer:
             # El cliente no respeta el formato. Se informa y se corta: si el framing está
             # roto, no hay forma de saber dónde empieza el mensaje siguiente.
             logger.warning("protocolo inválido de %s: %s", address, error)
-            await try_to_report(writer, messages.BAD_REQUEST, str(error))
+            await outgoing.try_to_report(writer, messages.BAD_REQUEST, str(error))
 
         except (ConnectionResetError, BrokenPipeError):
             logger.info("%s se cayó sin cerrar", address)
@@ -241,7 +241,7 @@ class ImageServer:
                 # cliente tiene que poder distinguirlo de una caída del servidor. La
                 # excepción son los rechazos que dejan bytes sin leer en el socket.
                 logger.info("rechazado: %s", error)
-                await respond_error(writer, error.code, error.detail)
+                await outgoing.respond_error(writer, error.code, error.detail)
 
                 if error.closes_connection:
                     return
@@ -285,7 +285,7 @@ class ImageServer:
             )
 
         if request_type not in messages.REQUEST_TYPES:
-            await discard_payload(reader, payload_size)
+            await incoming.discard_payload(reader, payload_size)
             raise BadRequest(f"tipo de pedido desconocido: '{request_type}'")
 
         if request_type == messages.HISTORY:
@@ -329,10 +329,10 @@ class ImageServer:
         Raises:
             BadRequest: Si falta el usuario o el límite no es un entero positivo.
         """
-        await discard_payload(reader, payload_size)
+        await incoming.discard_payload(reader, payload_size)
 
-        user = require_user(header)
-        limit = read_limit(header)
+        user = incoming.require_user(header)
+        limit = incoming.read_limit(header)
 
         jobs = self.jobs.list_for(user, limit)
         logger.info("historial de '%s': %d trabajos", user, len(jobs))
@@ -378,22 +378,22 @@ class ImageServer:
                 los bytes anunciados.
         """
         try:
-            user = require_user(header)
-            operation = require_operation(header)
-            parameters = read_parameters(header, operation)
-            filename = safe_filename(header)
-            require_non_empty_image(payload_size)
+            user = incoming.require_user(header)
+            operation = incoming.require_operation(header)
+            parameters = incoming.read_parameters(header, operation)
+            filename = incoming.safe_filename(header)
+            incoming.require_non_empty_image(payload_size)
         except RequestError:
             # Consumir antes de propagar: los bytes ya vienen en camino y hay que sacarlos
             # del socket para que el mensaje siguiente empiece donde debe.
-            await discard_payload(reader, payload_size)
+            await incoming.discard_payload(reader, payload_size)
             raise
 
         job = registry.new_job(user, operation, parameters, filename)
         job_directory = self.uploads_dir / job.job_id
 
         try:
-            await save_upload(reader, payload_size, job_directory / filename)
+            await incoming.save_upload(reader, payload_size, job_directory / filename)
         except BaseException:
             # Ni el archivo a medias ni el directorio sirven si el trabajo no prospera.
             # Se atrapa BaseException y no Exception porque una cancelación de la tarea
@@ -446,10 +446,10 @@ class ImageServer:
             JobNotFound: Si no existe un trabajo con ese identificador.
             Forbidden: Si el trabajo es de otro usuario.
         """
-        await discard_payload(reader, payload_size)
+        await incoming.discard_payload(reader, payload_size)
 
-        user = require_user(header)
-        job_id = require_job_id(header)
+        user = incoming.require_user(header)
+        job_id = incoming.require_job_id(header)
 
         job = self.jobs.find(user, job_id)
 
@@ -504,10 +504,10 @@ class ImageServer:
             NoOutput: Si la operación no genera archivo, o si el trabajo falló.
             InternalError: Si el trabajo terminó pero su archivo ya no está.
         """
-        await discard_payload(reader, payload_size)
+        await incoming.discard_payload(reader, payload_size)
 
-        user = require_user(header)
-        job_id = require_job_id(header)
+        user = incoming.require_user(header)
+        job_id = incoming.require_job_id(header)
 
         job = self.jobs.find(user, job_id)
 
@@ -537,332 +537,12 @@ class ImageServer:
         await protocol.send_file(writer, {
             messages.TYPE_FIELD: messages.OK,
             "job_id": job.job_id,
-            "filename": suggested_download_name(job),
-            "content_type": content_type_of(job.output_path),
+            "filename": outgoing.suggested_download_name(job),
+            "content_type": outgoing.content_type_of(job.output_path),
         }, job.output_path)
 
 
-# ──────────────────────── validación de campos comunes ────────────────────────
-
-
-def require_user(header: dict[str, Any]) -> str:
-    """Lee el usuario declarado en el pedido, verificando que esté presente.
-
-    Los cuatro pedidos del protocolo lo llevan, así que se valida en un solo lugar.
-
-    Args:
-        header: Header del pedido, ya deserializado.
-
-    Returns:
-        El nombre del usuario, sin espacios sobrantes.
-
-    Raises:
-        BadRequest: Si falta, está vacío o no es texto.
-    """
-    user = header.get("user")
-
-    if not isinstance(user, str) or not user.strip():
-        raise BadRequest("falta el campo 'user' o está vacío")
-
-    return user.strip()
-
-
-def read_limit(header: dict[str, Any]) -> int:
-    """Lee cuántos trabajos devolver en el historial, con un tope propio del servidor.
-
-    El tope existe porque el límite lo elige el cliente: sin él, un pedido de un millón de
-    filas haría trabajar al servidor mucho más de lo razonable. Se recorta en silencio en
-    vez de rechazar el pedido, porque pedir de más no es un error del cliente: no tiene
-    por qué conocer nuestro tope, y sería un error que no puede corregir.
-
-    Args:
-        header: Header del pedido, ya deserializado.
-
-    Returns:
-        La cantidad a devolver, acotada a `config.MAX_HISTORY_LIMIT`.
-
-    Raises:
-        BadRequest: Si el valor no es un entero positivo.
-    """
-    limit = header.get("limit", config.DEFAULT_HISTORY_LIMIT)
-
-    # El bool se descarta aparte porque en Python es subclase de int: sin esto, un
-    # 'limit' de `true` pasaría como si fuera 1.
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-        raise BadRequest("'limit' debe ser un entero positivo")
-
-    return min(limit, config.MAX_HISTORY_LIMIT)
-
-
-
-def require_job_id(header: dict[str, Any]) -> str:
-    """Lee el identificador de trabajo del pedido, verificando que esté presente.
-
-    Lo llevan `status` y `download`, así que se valida en un solo lugar.
-
-    Args:
-        header: Header del pedido, ya deserializado.
-
-    Returns:
-        El identificador, sin espacios sobrantes.
-
-    Raises:
-        BadRequest: Si falta, está vacío o no es texto.
-    """
-    job_id = header.get("job_id")
-
-    if not isinstance(job_id, str) or not job_id.strip():
-        raise BadRequest("falta el campo 'job_id' o está vacío")
-
-    return job_id.strip()
-
-
-def require_operation(header: dict[str, Any]) -> str:
-    """Lee la operación pedida, verificando que exista.
-
-    Args:
-        header: Header del pedido, ya deserializado.
-
-    Returns:
-        El nombre de la operación.
-
-    Raises:
-        UnknownOperation: Si falta o no es una de las soportadas.
-    """
-    operation = header.get("op")
-
-    if not isinstance(operation, str) or operation not in config.OPERATION_PARAMETERS:
-        supported = ", ".join(sorted(config.OPERATION_PARAMETERS))
-        raise UnknownOperation(
-            f"la operación '{operation}' no existe; las disponibles son: {supported}"
-        )
-
-    return operation
-
-
-def read_parameters(header: dict[str, Any], operation: str) -> dict[str, Any]:
-    """Lee los parámetros del pedido, verificando que correspondan a esa operación.
-
-    Se validan los **nombres**, no los valores: qué significa cada parámetro y qué rangos
-    admite lo sabe el worker que lo va a usar. El cliente ya verifica los rangos por
-    comodidad, pero eso no se puede dar por hecho — cualquiera puede hablar el protocolo
-    sin usar nuestro cliente.
-
-    Un parámetro que la operación no acepta se rechaza en vez de ignorarse: casi siempre
-    es una confusión, y silenciarlo haría creer que se aplicó.
-
-    Args:
-        header: Header del pedido, ya deserializado.
-        operation: La operación, ya validada.
-
-    Returns:
-        Los parámetros pedidos, o un diccionario vacío si no vinieron.
-
-    Raises:
-        BadRequest: Si no es un objeto, o si trae un parámetro ajeno a la operación.
-    """
-    parameters = header.get("params", {})
-
-    if not isinstance(parameters, dict):
-        raise BadRequest("'params' debe ser un objeto")
-
-    accepted = config.OPERATION_PARAMETERS[operation]
-    for name in parameters:
-        if name not in accepted:
-            detail = (
-                f"acepta: {', '.join(accepted)}" if accepted else "no acepta parámetros"
-            )
-            raise BadRequest(f"'{name}' no es un parámetro de '{operation}'; {detail}")
-
-    return parameters
-
-
-def safe_filename(header: dict[str, Any]) -> str:
-    """Lee el nombre del archivo del pedido, dejándolo seguro para usar como ruta.
-
-    El nombre lo elige el cliente, así que **no se puede confiar en él**. Un valor como
-    `../../etc/passwd` construiría una ruta fuera del directorio del trabajo.
-    `Path().name` se queda solo con el último componente, lo que elimina esa posibilidad
-    de raíz en lugar de intentar detectar los casos peligrosos uno por uno.
-
-    Args:
-        header: Header del pedido, ya deserializado.
-
-    Returns:
-        El nombre del archivo, sin ninguna parte de ruta.
-
-    Raises:
-        BadRequest: Si falta o no queda un nombre de archivo usable.
-        InvalidImage: Si la extensión no está soportada.
-    """
-    raw_name = header.get("filename")
-
-    if not isinstance(raw_name, str) or not raw_name.strip():
-        raise BadRequest("falta el campo 'filename' o está vacío")
-
-    name = Path(raw_name).name
-    if not name or name in (".", ".."):
-        raise BadRequest(f"'{raw_name}' no es un nombre de archivo válido")
-
-    if Path(name).suffix.lower() not in config.SUPPORTED_EXTENSIONS:
-        supported = ", ".join(sorted(config.SUPPORTED_EXTENSIONS))
-        raise InvalidImage(
-            f"la extensión de '{name}' no está soportada; se aceptan: {supported}"
-        )
-
-    return name
-
-
-def require_non_empty_image(payload_size: int) -> None:
-    """Verifica que el envío traiga efectivamente una imagen.
-
-    El límite superior no se controla acá: lo aplica `dispatch` sobre todos los pedidos,
-    porque un payload excesivo obliga además a cortar la conexión.
-
-    Args:
-        payload_size: Bytes declarados en el header.
-
-    Returns:
-        None.
-
-    Raises:
-        BadRequest: Si el envío viene sin contenido.
-    """
-    if payload_size == 0:
-        raise BadRequest("un envío tiene que traer una imagen")
-
-
-# ─────────────────────────── funciones auxiliares ───────────────────────────
-
-def suggested_download_name(job: registry.Job) -> str:
-    """Arma un nombre de archivo legible para el resultado de un trabajo.
-
-    En disco el resultado se llama siempre igual —un nombre interno y uniforme— pero al
-    cliente le sirve más algo que diga de dónde salió: `foto_anonymize.jpg` en lugar de
-    `out.jpg`. Es solo una sugerencia: el cliente puede guardarlo donde indique `-o`.
-
-    Args:
-        job: El trabajo terminado, con su archivo de salida.
-
-    Returns:
-        El nombre sugerido, combinando el nombre original y la operación aplicada.
-    """
-    original = Path(job.filename)
-    output_suffix = job.output_path.suffix if job.output_path else original.suffix
-
-    return f"{original.stem}_{job.operation}{output_suffix}"
-
-
-def content_type_of(file_path: Path) -> str:
-    """Deduce el tipo de contenido de un archivo a partir de su extensión.
-
-    Args:
-        file_path: Ruta del archivo.
-
-    Returns:
-        El tipo MIME, o 'application/octet-stream' si no se puede deducir.
-    """
-    guessed_type, _encoding = mimetypes.guess_type(file_path.name)
-
-    return guessed_type or "application/octet-stream"
-
-
-async def save_upload(
-    reader: asyncio.StreamReader, payload_size: int, destination: Path
-) -> None:
-    """Vuelca el payload del pedido en un archivo, bloque por bloque.
-
-    No acumula la imagen en memoria: la escribe a medida que llega. Con muchos clientes
-    subiendo archivos grandes, esa es la diferencia entre usar unos kilobytes por conexión
-    y usar el tamaño entero de cada imagen.
-
-    Args:
-        reader: Stream de lectura de la conexión.
-        payload_size: Cuántos bytes leer, según lo declarado en el header.
-        destination: Dónde escribir. Su directorio se crea si no existe.
-
-    Returns:
-        None.
-
-    Raises:
-        asyncio.IncompleteReadError: Si la conexión se corta antes de completar los bytes
-            anunciados. El archivo parcial queda en disco: limpiarlo le toca a quien
-            llama, que es el que sabe qué más hay que deshacer.
-        OSError: Si no se puede crear el directorio o escribir el archivo.
-    """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(destination, "wb") as image_file:
-        async for chunk in protocol.stream_payload(reader, payload_size):
-            image_file.write(chunk)
-
-
-
-
-async def discard_payload(reader: asyncio.StreamReader, payload_size: int) -> None:
-    """Lee y descarta el payload de un pedido que no se va a usar.
-
-    Hace falta incluso al rechazar un pedido: el payload ya viene en camino y hay que
-    sacarlo del socket para que el mensaje siguiente empiece donde debe.
-
-    Args:
-        reader: Stream de lectura de la conexión.
-        payload_size: Cuántos bytes descartar. Si es cero, no hace nada.
-
-    Returns:
-        None.
-    """
-    if payload_size == 0:
-        return
-
-    async for _chunk in protocol.stream_payload(reader, payload_size):
-        pass  # se lee para vaciar el socket; el contenido no interesa
-
-
-async def respond_error(
-    writer: asyncio.StreamWriter, code: str, detail: str = ""
-) -> None:
-    """Responde un mensaje de error del protocolo.
-
-    Un error es una respuesta como cualquier otra y no cierra la conexión: el cliente
-    tiene que poder distinguir un pedido rechazado de una caída del servidor.
-
-    Args:
-        writer: Stream de escritura de la conexión.
-        code: Uno de los códigos de `messages`.
-        detail: Explicación para el usuario. Si se omite, el cliente usa la explicación
-            estándar del código.
-
-    Returns:
-        None.
-    """
-    await protocol.send_message(writer, {
-        messages.TYPE_FIELD: messages.ERROR,
-        "code": code,
-        "message": detail,
-    })
-
-
-async def try_to_report(
-    writer: asyncio.StreamWriter, code: str, detail: str
-) -> None:
-    """Intenta informar un error, aceptando que quizá ya no haya nadie escuchando.
-
-    Se usa cuando el fallo pudo haber roto la conexión. Si el envío falla, no hay nada
-    que hacer ni nada que informar: el cliente ya no está.
-
-    Args:
-        writer: Stream de escritura de la conexión.
-        code: Uno de los códigos de `messages`.
-        detail: Explicación para el usuario.
-
-    Returns:
-        None.
-    """
-    try:
-        await respond_error(writer, code, detail)
-    except (OSError, protocol.ProtocolError):
-        pass
+# ─────────────────────────── manejo de la conexión ───────────────────────────
 
 
 async def close_quietly(writer: asyncio.StreamWriter) -> None:

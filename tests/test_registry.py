@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timezone
 
 from app.common import messages
-from app.server.registry import Job, JobRegistry, format_timestamp, new_job
+from app.server.main.registry import Job, JobRegistry, format_timestamp, new_job
 
 
 def a_job(user: str = "augusto", operation: str = "anonymize") -> Job:

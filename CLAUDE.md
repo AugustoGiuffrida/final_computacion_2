@@ -55,8 +55,14 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
 
 1. `app/common/` — `protocol.py` (framing), `messages.py` (catálogo) y `config.py`.
 2. `app/client/` — CLI completa: `cli.py`, `session.py`, `console.py`, `formatting.py`.
-3. `app/server/` — `cli.py` (arranque, señales) y `server.py` (handler y despachador).
-4. `tests/` — 51 pruebas sobre `unittest`, con servidores reales en localhost.
+3. `app/server/main/` — el proceso principal, completo: `cli.py` (arranque, señales),
+   `image_server.py` (handler y despachador), `incoming.py` (validación de lo que llega),
+   `outgoing.py` (armado de lo que sale) y `registry.py` (índice en memoria de trabajos).
+4. `tests/` — 97 pruebas sobre `unittest`, con servidores reales en localhost.
+
+`app/server/` se divide en `main/` (proceso principal) e `intake/` (proceso hijo), con lo
+compartido en la raíz. La separación no es cosmética: el hijo importa Pillow y `sqlite3`,
+y el principal no debe importar ninguno de los dos.
 
 ### Próximos pasos, en este orden
 

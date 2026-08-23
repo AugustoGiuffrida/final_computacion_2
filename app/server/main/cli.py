@@ -16,7 +16,7 @@ import signal
 from pathlib import Path
 
 from app.common import config
-from app.server.server import ImageServer
+from app.server.main.image_server import ImageServer
 
 EXIT_OK = 0 #Terminó de forma ordenada.
 EXIT_FAILURE = 1 #No pudo arrancar: el puerto está ocupado, la dirección no existe.

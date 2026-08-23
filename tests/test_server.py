@@ -16,8 +16,8 @@ from typing import Any
 
 from app.client import session
 from app.common import config, messages, protocol
-from app.server import registry
-from app.server.server import ImageServer
+from app.server.main import registry
+from app.server.main.image_server import ImageServer
 
 
 class ServerTestCase(unittest.IsolatedAsyncioTestCase):

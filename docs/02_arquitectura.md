@@ -495,16 +495,22 @@ final_comp2/
 │   │   └── formatting.py    # colores, tamaños y fechas                        [hecho]
 │   ├── server/
 │   │   ├── __main__.py      # punto de entrada de `python -m app.server`       [hecho]
-│   │   ├── cli.py           # argparse, registro de actividad y apagado        [hecho]
-│   │   ├── server.py        # asyncio.start_server, handler y despachador      [hecho]
-│   │   ├── registry.py      # resolución de trabajos: índice en memoria +
-│   │   │                    #   lecturas a SQLite                          [pendiente]
-│   │   ├── jobs.py          # puente con Celery: encolar, consultar estado,
+│   │   ├── ipc.py           # COMPARTIDO por los dos procesos: qué viaja por
+│   │   │                    #   las colas                                 [pendiente]
+│   │   ├── main/            # ── lo que corre en el proceso principal ──
+│   │   │   ├── cli.py       # argparse, registro de actividad y apagado        [hecho]
+│   │   │   ├── image_server.py  # asyncio.start_server, handler y despachador  [hecho]
+│   │   │   ├── incoming.py  # validar el header y consumir el payload          [hecho]
+│   │   │   ├── outgoing.py  # armar y mandar las respuestas                    [hecho]
+│   │   │   ├── registry.py  # resolución de trabajos: índice en memoria +
+│   │   │   │                #   lecturas a SQLite                             [a medias]
+│   │   │   ├── intake_channel.py  # lanzar, consultar y supervisar al
+│   │   │   │                #   proceso hijo                              [pendiente]
+│   │   │   └── jobs.py      # puente con Celery: encolar, consultar estado,
 │   │   │                    #   monitoreo de trabajos en vuelo             [pendiente]
-│   │   ├── ipc.py           # las dos colas, la bomba de respuestas y la
-│   │   │                    #   supervisión del proceso hijo               [pendiente]
-│   │   └── intake.py        # proceso hijo: verificación, hash, deduplicación
-│   │                        #   y escritura de SQLite                      [pendiente]
+│   │   └── intake/          # ── lo que corre en el proceso de ingreso ──
+│   │       ├── process.py   # el bucle: verificación, hash, deduplicación [pendiente]
+│   │       └── database.py  # el único escritor de SQLite                 [pendiente]
 │   └── worker/
 │       ├── celery_app.py    # instancia y configuración de Celery          [pendiente]
 │       └── tasks.py         # tareas Pillow/OpenCV, una por operación      [pendiente]
@@ -514,6 +520,10 @@ final_comp2/
 ├── Dockerfile                                                              [pendiente]
 └── requirements.txt
 ```
+
+Dentro de `server/`, `main/` e `intake/` son **dos procesos distintos** y por eso están
+separados: el de ingreso importa Pillow y `sqlite3`, el principal no debe importar
+ninguno de los dos. Lo único que ambos conocen es `ipc.py`, el vocabulario de las colas.
 
 **Regla de dependencias**: `client` y `server` solo comparten `common/`; `worker` no
 importa nada del servidor (solo `common/config`). Esto garantiza que cada componente
@@ -553,11 +563,11 @@ desenlaces y lo que se persiste en cada uno, está en la sección 4.3.
 
 | Requisito obligatorio | Dónde se cumple |
 |---|---|
-| Sockets, clientes múltiples concurrentes | `server.py` — `asyncio.start_server` sobre TCP, escuchando en IPv4 e IPv6 |
-| Mecanismos de IPC | dos `mp.Queue` (pedidos y respuestas) entre servidor e `intake.py` |
+| Sockets, clientes múltiples concurrentes | `main/image_server.py` — `asyncio.start_server` sobre TCP, escuchando en IPv4 e IPv6 |
+| Mecanismos de IPC | dos `mp.Queue` (pedidos y respuestas) entre `main/intake_channel.py` e `intake/process.py` |
 | Asincronismo de I/O | asyncio en el servidor y en el cliente (streams en ambos) |
 | Cola de tareas distribuidas | Celery + Redis, tareas en `tasks.py` |
-| Parseo de argumentos CLI | argparse en `client/cli.py` y `server/cli.py` |
+| Parseo de argumentos CLI | argparse en `client/cli.py` y `server/main/cli.py` |
 
 | Adicional | Dónde |
 |---|---|
