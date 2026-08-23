@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.common import messages
+from app.common.messages import Forbidden, JobNotFound
 
 
 @dataclass
@@ -162,19 +163,15 @@ class JobRegistry:
             El trabajo, si existe y es de ese usuario.
 
         Raises:
-            messages.RequestError: `JOB_NOT_FOUND` si no existe, `FORBIDDEN` si es de otro.
+            JobNotFound: Si no existe un trabajo con ese identificador.
+            Forbidden: Si el trabajo es de otro usuario.
         """
         job = self._jobs.get(job_id)
 
         if job is None:
-            raise messages.RequestError(
-                messages.JOB_NOT_FOUND,
-                f"no existe un trabajo con el identificador '{job_id}'",
-            )
+            raise JobNotFound(f"no existe un trabajo con el identificador '{job_id}'")
         if job.user != user:
-            raise messages.RequestError(
-                messages.FORBIDDEN, "ese trabajo pertenece a otro usuario"
-            )
+            raise Forbidden()
 
         return job
 

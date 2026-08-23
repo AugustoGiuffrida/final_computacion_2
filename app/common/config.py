@@ -11,43 +11,48 @@ disparatados, estos expresan reglas de la aplicación.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
 
 # ─────────────────────────────── red ───────────────────────────────
 
-DEFAULT_HOST: Final[str] = "localhost" #Servidor al que se conecta el cliente si no se indica otro.
+# Servidor al que se conecta el cliente si no se indica otro.
+DEFAULT_HOST = "localhost"
 
-DEFAULT_PORT: Final[int] = 9000 #Puerto alto a propósito: los menores a 1024 requieren privilegios de root.
+# Puerto alto a propósito: los menores a 1024 requieren privilegios de root.
+DEFAULT_PORT = 9000
 
 # None le dice a asyncio.start_server que escuche en todas las interfaces disponibles.
 # Abre un socket por familia: uno AF_INET y otro AF_INET6, ambos en el mismo puerto.
-LISTEN_ON_ALL_INTERFACES: Final[None] = None
+LISTEN_ON_ALL_INTERFACES = None
 
 # ────────────────────────── almacenamiento ──────────────────────────
 
-PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2] #Raíz del repositorio.
+# Raíz del repositorio.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-STORAGE_DIR: Final[Path] = PROJECT_ROOT / "storage" #Directorio raíz de los archivos.
+# Directorio raíz de los archivos.
+STORAGE_DIR = PROJECT_ROOT / "storage"
 
-UPLOADS_DIR: Final[Path] = STORAGE_DIR / "uploads" #Originales, en un subdirectorio por trabajo.
+# Originales, en un subdirectorio por trabajo.
+UPLOADS_DIR = STORAGE_DIR / "uploads"
 
-RESULTS_DIR: Final[Path] = STORAGE_DIR / "results" #Procesadas, en un subdirectorio por trabajo.
+# Procesadas, en un subdirectorio por trabajo.
+RESULTS_DIR = STORAGE_DIR / "results"
 
 # ─────────────────────────── imágenes ───────────────────────────
 
 # Validación de conveniencia del cliente, para fallar temprano y sin molestar al
 # servidor. Que el archivo sea realmente una imagen lo verifica el servidor.
-SUPPORTED_EXTENSIONS: Final[frozenset[str]] = frozenset({".jpg", ".jpeg", ".png"})
+SUPPORTED_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
 
 # Regla de la aplicación. Se mantiene por debajo de protocol.MAX_PAYLOAD_SIZE, que es el
 # techo defensivo del framing.
-DEFAULT_MAX_IMAGE_SIZE: Final[int] = 25 * 1024 * 1024
+DEFAULT_MAX_IMAGE_SIZE = 25 * 1024 * 1024
 
 # ─────────────────────────── operaciones ───────────────────────────
 
 # Única fuente de verdad sobre qué se puede pedir: el cliente arma con esto las opciones
 # de su línea de comandos y el servidor valida contra lo mismo.
-OPERATION_PARAMETERS: Final[dict[str, tuple[str, ...]]] = {
+OPERATION_PARAMETERS = {
     "inspect": (),
     "anonymize": ("mode", "strength"),
     "clean": (),
@@ -58,7 +63,7 @@ OPERATION_PARAMETERS: Final[dict[str, tuple[str, ...]]] = {
 
 # Todos los parámetros que existen, sin repetir. Se deriva del diccionario de arriba para
 # que agregar uno no obligue a acordarse de tocar una segunda lista.
-ALL_OPERATION_PARAMETERS: Final[tuple[str, ...]] = tuple(
+ALL_OPERATION_PARAMETERS = tuple(
     dict.fromkeys(
         parameter
         for parameters in OPERATION_PARAMETERS.values()
@@ -66,22 +71,26 @@ ALL_OPERATION_PARAMETERS: Final[tuple[str, ...]] = tuple(
     )
 )
 
-ANONYMIZE_MODES: Final[tuple[str, ...]] = ("blur", "pixelate", "box") #Formas de cubrir una cara.
+# Formas de cubrir una cara.
+ANONYMIZE_MODES = ("blur", "pixelate", "box")
 
-CONVERT_FORMATS: Final[tuple[str, ...]] = ("webp", "jpeg", "png") #Formatos de salida de convert.
+# Formatos de salida de convert.
+CONVERT_FORMATS = ("webp", "jpeg", "png")
 
 # ─────────────────────────── historial ───────────────────────────
 
-DEFAULT_HISTORY_LIMIT: Final[int] = 10 #Cuántos trabajos devuelve si el cliente no pide una cantidad.
+# Cuántos trabajos devuelve si el cliente no pide una cantidad.
+DEFAULT_HISTORY_LIMIT = 10
 
 # Tope que impone el servidor, elija lo que elija el cliente. Un pedido más grande no se
 # rechaza: se recorta a este valor.
-MAX_HISTORY_LIMIT: Final[int] = 100
+MAX_HISTORY_LIMIT = 100
 
 # ────────────────────────── espera del cliente ──────────────────────────
 
-STATUS_POLL_INTERVAL_SECONDS: Final[float] = 1.0 #Cada cuánto reconsulta el cliente con --wait.
+# Cada cuánto reconsulta el cliente con --wait.
+STATUS_POLL_INTERVAL_SECONDS = 1.0
 
 # Cuánto espera el cliente antes de rendirse. Rendirse no cancela nada: el trabajo sigue
 # su curso y el resultado queda disponible.
-DEFAULT_WAIT_TIMEOUT_SECONDS: Final[int] = 300
+DEFAULT_WAIT_TIMEOUT_SECONDS = 300

@@ -29,6 +29,16 @@ from pathlib import Path
 from typing import Any
 
 from app.common import config, messages, protocol
+from app.common.messages import (
+    BadRequest,
+    InternalError,
+    InvalidImage,
+    NoOutput,
+    NotReady,
+    RequestError,
+    TooLarge,
+    UnknownOperation,
+)
 from app.server import registry
 
 logger = logging.getLogger(__name__)
@@ -226,7 +236,7 @@ class ImageServer:
 
             try:
                 await self.dispatch(header, payload_size, reader, writer)
-            except messages.RequestError as error:
+            except RequestError as error:
                 # Un pedido rechazado es una respuesta más y no corta la conexión: el
                 # cliente tiene que poder distinguirlo de una caída del servidor. La
                 # excepción son los rechazos que dejan bytes sin leer en el socket.
@@ -263,23 +273,20 @@ class ImageServer:
             None.
 
         Raises:
-            messages.RequestError: Si el tipo no existe o todavía no está implementado.
+            TooLarge: Si el payload anunciado supera el máximo aceptado.
+            BadRequest: Si el tipo de pedido no está en el catálogo.
         """
         request_type = header.get(messages.TYPE_FIELD)
 
         if payload_size > config.DEFAULT_MAX_IMAGE_SIZE:
-            raise messages.RequestError(
-                messages.TOO_LARGE,
+            raise TooLarge(
                 f"el payload declarado es de {payload_size} bytes y el máximo que se "
-                f"acepta es {config.DEFAULT_MAX_IMAGE_SIZE}",
-                closes_connection=True,
+                f"acepta es {config.DEFAULT_MAX_IMAGE_SIZE}"
             )
 
         if request_type not in messages.REQUEST_TYPES:
             await discard_payload(reader, payload_size)
-            raise messages.RequestError(
-                messages.BAD_REQUEST, f"tipo de pedido desconocido: '{request_type}'"
-            )
+            raise BadRequest(f"tipo de pedido desconocido: '{request_type}'")
 
         if request_type == messages.HISTORY:
             await self.handle_history(header, payload_size, reader, writer)
@@ -320,8 +327,7 @@ class ImageServer:
             None.
 
         Raises:
-            messages.RequestError: `BAD_REQUEST` si falta el usuario o el límite es
-                inválido.
+            BadRequest: Si falta el usuario o el límite no es un entero positivo.
         """
         await discard_payload(reader, payload_size)
 
@@ -366,7 +372,8 @@ class ImageServer:
             None.
 
         Raises:
-            messages.RequestError: Si el pedido es inválido en cualquiera de sus campos.
+            RequestError: Si el pedido es inválido en cualquiera de sus campos; la
+                subclase depende de qué campo falle.
             asyncio.IncompleteReadError: Si la transferencia se corta antes de completar
                 los bytes anunciados.
         """
@@ -376,7 +383,7 @@ class ImageServer:
             parameters = read_parameters(header, operation)
             filename = safe_filename(header)
             require_non_empty_image(payload_size)
-        except messages.RequestError:
+        except RequestError:
             # Consumir antes de propagar: los bytes ya vienen en camino y hay que sacarlos
             # del socket para que el mensaje siguiente empiece donde debe.
             await discard_payload(reader, payload_size)
@@ -435,8 +442,9 @@ class ImageServer:
             None.
 
         Raises:
-            messages.RequestError: `BAD_REQUEST` si faltan campos, `JOB_NOT_FOUND` si no
-                existe, `FORBIDDEN` si es de otro usuario.
+            BadRequest: Si falta algún campo obligatorio.
+            JobNotFound: Si no existe un trabajo con ese identificador.
+            Forbidden: Si el trabajo es de otro usuario.
         """
         await discard_payload(reader, payload_size)
 
@@ -490,9 +498,11 @@ class ImageServer:
             None.
 
         Raises:
-            messages.RequestError: `JOB_NOT_FOUND` o `FORBIDDEN` al resolverlo,
-                `NOT_READY` si sigue en curso, `NO_OUTPUT` si no produce archivo, o
-                `INTERNAL` si el archivo ya no está.
+            JobNotFound: Si no existe un trabajo con ese identificador.
+            Forbidden: Si el trabajo es de otro usuario.
+            NotReady: Si el trabajo todavía no terminó.
+            NoOutput: Si la operación no genera archivo, o si el trabajo falló.
+            InternalError: Si el trabajo terminó pero su archivo ya no está.
         """
         await discard_payload(reader, payload_size)
 
@@ -502,30 +512,25 @@ class ImageServer:
         job = self.jobs.find(user, job_id)
 
         if job.status == messages.FAILED:
-            raise messages.RequestError(
-                messages.NO_OUTPUT,
+            raise NoOutput(
                 "el trabajo falló y no produjo ningún archivo: "
-                f"{job.error or 'sin motivo registrado'}",
+                f"{job.error or 'sin motivo registrado'}"
             )
         if job.status != messages.DONE:
-            raise messages.RequestError(
-                messages.NOT_READY,
-                f"el trabajo todavía está en {job.status}: no hay nada para descargar",
+            raise NotReady(
+                f"el trabajo todavía está en {job.status}: no hay nada para descargar"
             )
         if job.output_path is None:
-            raise messages.RequestError(
-                messages.NO_OUTPUT,
+            raise NoOutput(
                 f"'{job.operation}' no genera archivo; su resultado está en la consulta "
-                "de estado",
+                "de estado"
             )
         if not job.output_path.exists():
             # El trabajo figura terminado pero el archivo no está: lo borró la limpieza
             # periódica de resultados viejos, o alguien tocó el volumen por fuera. Sin
             # este control, `send_file` fallaría con un OSError que cerraría la conexión,
             # y el cliente vería "el servidor cortó" en vez de una explicación.
-            raise messages.RequestError(
-                messages.INTERNAL, "el resultado de ese trabajo ya no está disponible"
-            )
+            raise InternalError("el resultado de ese trabajo ya no está disponible")
 
         logger.info("descarga de %s: %s", job.job_id, job.output_path.name)
 
@@ -552,14 +557,12 @@ def require_user(header: dict[str, Any]) -> str:
         El nombre del usuario, sin espacios sobrantes.
 
     Raises:
-        messages.RequestError: `BAD_REQUEST` si falta, está vacío o no es texto.
+        BadRequest: Si falta, está vacío o no es texto.
     """
     user = header.get("user")
 
     if not isinstance(user, str) or not user.strip():
-        raise messages.RequestError(
-            messages.BAD_REQUEST, "falta el campo 'user' o está vacío"
-        )
+        raise BadRequest("falta el campo 'user' o está vacío")
 
     return user.strip()
 
@@ -579,16 +582,14 @@ def read_limit(header: dict[str, Any]) -> int:
         La cantidad a devolver, acotada a `config.MAX_HISTORY_LIMIT`.
 
     Raises:
-        messages.RequestError: `BAD_REQUEST` si el valor no es un entero positivo.
+        BadRequest: Si el valor no es un entero positivo.
     """
     limit = header.get("limit", config.DEFAULT_HISTORY_LIMIT)
 
     # El bool se descarta aparte porque en Python es subclase de int: sin esto, un
     # 'limit' de `true` pasaría como si fuera 1.
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-        raise messages.RequestError(
-            messages.BAD_REQUEST, "'limit' debe ser un entero positivo"
-        )
+        raise BadRequest("'limit' debe ser un entero positivo")
 
     return min(limit, config.MAX_HISTORY_LIMIT)
 
@@ -606,14 +607,12 @@ def require_job_id(header: dict[str, Any]) -> str:
         El identificador, sin espacios sobrantes.
 
     Raises:
-        messages.RequestError: `BAD_REQUEST` si falta, está vacío o no es texto.
+        BadRequest: Si falta, está vacío o no es texto.
     """
     job_id = header.get("job_id")
 
     if not isinstance(job_id, str) or not job_id.strip():
-        raise messages.RequestError(
-            messages.BAD_REQUEST, "falta el campo 'job_id' o está vacío"
-        )
+        raise BadRequest("falta el campo 'job_id' o está vacío")
 
     return job_id.strip()
 
@@ -628,15 +627,14 @@ def require_operation(header: dict[str, Any]) -> str:
         El nombre de la operación.
 
     Raises:
-        messages.RequestError: `UNKNOWN_OP` si falta o no es una de las soportadas.
+        UnknownOperation: Si falta o no es una de las soportadas.
     """
     operation = header.get("op")
 
     if not isinstance(operation, str) or operation not in config.OPERATION_PARAMETERS:
         supported = ", ".join(sorted(config.OPERATION_PARAMETERS))
-        raise messages.RequestError(
-            messages.UNKNOWN_OP,
-            f"la operación '{operation}' no existe; las disponibles son: {supported}",
+        raise UnknownOperation(
+            f"la operación '{operation}' no existe; las disponibles son: {supported}"
         )
 
     return operation
@@ -661,13 +659,12 @@ def read_parameters(header: dict[str, Any], operation: str) -> dict[str, Any]:
         Los parámetros pedidos, o un diccionario vacío si no vinieron.
 
     Raises:
-        messages.RequestError: `BAD_REQUEST` si no es un objeto o trae un parámetro ajeno
-            a la operación.
+        BadRequest: Si no es un objeto, o si trae un parámetro ajeno a la operación.
     """
     parameters = header.get("params", {})
 
     if not isinstance(parameters, dict):
-        raise messages.RequestError(messages.BAD_REQUEST, "'params' debe ser un objeto")
+        raise BadRequest("'params' debe ser un objeto")
 
     accepted = config.OPERATION_PARAMETERS[operation]
     for name in parameters:
@@ -675,10 +672,7 @@ def read_parameters(header: dict[str, Any], operation: str) -> dict[str, Any]:
             detail = (
                 f"acepta: {', '.join(accepted)}" if accepted else "no acepta parámetros"
             )
-            raise messages.RequestError(
-                messages.BAD_REQUEST,
-                f"'{name}' no es un parámetro de '{operation}'; {detail}",
-            )
+            raise BadRequest(f"'{name}' no es un parámetro de '{operation}'; {detail}")
 
     return parameters
 
@@ -698,27 +692,22 @@ def safe_filename(header: dict[str, Any]) -> str:
         El nombre del archivo, sin ninguna parte de ruta.
 
     Raises:
-        messages.RequestError: `BAD_REQUEST` si falta o no queda un nombre usable;
-            `INVALID_IMAGE` si la extensión no está soportada.
+        BadRequest: Si falta o no queda un nombre de archivo usable.
+        InvalidImage: Si la extensión no está soportada.
     """
     raw_name = header.get("filename")
 
     if not isinstance(raw_name, str) or not raw_name.strip():
-        raise messages.RequestError(
-            messages.BAD_REQUEST, "falta el campo 'filename' o está vacío"
-        )
+        raise BadRequest("falta el campo 'filename' o está vacío")
 
     name = Path(raw_name).name
     if not name or name in (".", ".."):
-        raise messages.RequestError(
-            messages.BAD_REQUEST, f"'{raw_name}' no es un nombre de archivo válido"
-        )
+        raise BadRequest(f"'{raw_name}' no es un nombre de archivo válido")
 
     if Path(name).suffix.lower() not in config.SUPPORTED_EXTENSIONS:
         supported = ", ".join(sorted(config.SUPPORTED_EXTENSIONS))
-        raise messages.RequestError(
-            messages.INVALID_IMAGE,
-            f"la extensión de '{name}' no está soportada; se aceptan: {supported}",
+        raise InvalidImage(
+            f"la extensión de '{name}' no está soportada; se aceptan: {supported}"
         )
 
     return name
@@ -737,12 +726,10 @@ def require_non_empty_image(payload_size: int) -> None:
         None.
 
     Raises:
-        messages.RequestError: `BAD_REQUEST` si el envío viene sin contenido.
+        BadRequest: Si el envío viene sin contenido.
     """
     if payload_size == 0:
-        raise messages.RequestError(
-            messages.BAD_REQUEST, "un envío tiene que traer una imagen"
-        )
+        raise BadRequest("un envío tiene que traer una imagen")
 
 
 # ─────────────────────────── funciones auxiliares ───────────────────────────

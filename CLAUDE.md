@@ -190,6 +190,12 @@ async def send_message(writer: asyncio.StreamWriter, header: dict[str, Any],
 Usar los tipos nativos de Python moderno (`dict[str, Any]`, `list[str]`, `str | None`),
 no los de `typing` salvo cuando haga falta (`Any`, `Callable`, `Protocol`).
 
+**La regla vale para las firmas, no para las constantes.** En una firma el tipo no está a
+la vista y la anotación es la única forma de saberlo; en `DEFAULT_PORT = 9000` el tipo está
+en el valor, al lado. Anotarlas con `Final[int]` no agrega información, no tiene ningún
+efecto en ejecución —le habla a un verificador de tipos que en este proyecto no corre— y
+duplica el largo de cada declaración. Las constantes van sin anotación.
+
 ### Docstrings: obligatorios, pero solo lo que aporte
 
 Toda función lleva docstring en español, estilo Google. **La primera línea —qué hace— es
@@ -242,17 +248,39 @@ deducir solo.
 
 ### Comentarios de constantes
 
-Las constantes se comentan con `#`, no con docstrings. Si la explicación entra al costado,
-va inline; si no entra en la línea, va en una o más líneas `#` **arriba** de la asignación.
-Nunca un comentario inline que empuje la línea más allá de ~100 caracteres.
+Las constantes se comentan con `#`, no con docstrings, y el comentario va **arriba** de la
+asignación, nunca al costado. Pegado al valor obligaba a elegir entre truncar la
+explicación o pasar los 100 caracteres, y la constante quedaba escondida en el medio de la
+línea; arriba, el comentario puede ocupar lo que necesite y el nombre queda al principio.
 
 ```python
-DEFAULT_HOST: Final[str] = "localhost" #Servidor al que se conecta el cliente por defecto.
+# Servidor al que se conecta el cliente si no se indica otro.
+DEFAULT_HOST = "localhost"
 
-# None le dice a asyncio.start_server que escuche en todas las interfaces disponibles,
-# tanto IPv4 como IPv6: es el socket dual-stack.
-LISTEN_ON_ALL_INTERFACES: Final[None] = None
+# None le dice a asyncio.start_server que escuche en todas las interfaces disponibles.
+# Abre un socket por familia: uno AF_INET y otro AF_INET6, ambos en el mismo puerto.
+LISTEN_ON_ALL_INTERFACES = None
 ```
+
+### Errores del protocolo: una excepción por código
+
+Los rechazos del servidor se levantan con la subclase que corresponde, no pasando el código
+como argumento:
+
+```python
+raise BadRequest("falta el campo 'filename' o está vacío")
+raise Forbidden()  # sin argumento: usa la explicación estándar del código
+```
+
+El código y el `closes_connection` son atributos de cada clase porque no dependen del lugar
+donde se detecta el problema sino de la clase de problema. Eso importa más de lo que
+parece: `closes_connection` como argumento suelto era algo que había que acordarse de pasar,
+y olvidarlo dejó al servidor colgado esperando bytes que nunca iban a llegar. Ahora es
+`TooLarge` quien lo lleva y no hay forma de levantarlo sin él.
+
+Se **atrapa** la base —`except RequestError`— y se **levanta** la subclase. Las subclases se
+importan por nombre (`from app.common.messages import BadRequest, ...`), como es habitual
+con excepciones en Python; las constantes de estados y tipos siguen con `messages.DONE`.
 
 ### Nombres explicativos
 

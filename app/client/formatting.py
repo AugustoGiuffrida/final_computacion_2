@@ -11,13 +11,13 @@ para mostrar. Los nombres de estilo son los de Rich.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Final
+from typing import Any
 
 from app.common import messages
 
 # Color e ícono de cada estado. El ícono existe para que el estado siga siendo legible en
 # una terminal sin color, o para alguien que no distinga bien el verde del rojo.
-STATUS_STYLES: Final[dict[str, tuple[str, str]]] = {
+STATUS_STYLES = {
     messages.QUEUED: ("yellow", "◷"),
     messages.PROCESSING: ("cyan", "◐"),
     messages.DONE: ("green", "✓"),
@@ -25,11 +25,11 @@ STATUS_STYLES: Final[dict[str, tuple[str, str]]] = {
 }
 
 # Para un estado que el servidor agregue y este cliente todavía no conozca.
-UNKNOWN_STATUS_STYLE: Final[tuple[str, str]] = ("dim", "·")
+UNKNOWN_STATUS_STYLE = ("dim", "·")
 
 # Nombre en castellano de cada campo del 'result'. Lo que no esté acá se muestra con su
 # nombre crudo, así un campo nuevo del servidor aparece igual en vez de desaparecer.
-RESULT_LABELS: Final[dict[str, str]] = {
+RESULT_LABELS = {
     "faces_detected": "Caras detectadas",
     "bytes": "Tamaño",
     "original_bytes": "Tamaño original",
@@ -47,12 +47,12 @@ RESULT_LABELS: Final[dict[str, str]] = {
 
 # Campos del informe de `inspect` que son, precisamente, la fuga de privacidad que la
 # aplicación existe para mostrar. Se resaltan para que salten a la vista en la demo.
-PRIVACY_SENSITIVE_FIELDS: Final[frozenset[str]] = frozenset({
+PRIVACY_SENSITIVE_FIELDS = frozenset({
     "gps", "taken_at", "camera", "serial_number",
 })
 
 # Campos que son cantidades de bytes y conviene mostrar en KB o MB.
-BYTE_FIELDS: Final[frozenset[str]] = frozenset({"bytes", "original_bytes", "final_bytes"})
+BYTE_FIELDS = frozenset({"bytes", "original_bytes", "final_bytes"})
 
 
 def status_style(status: str) -> str:

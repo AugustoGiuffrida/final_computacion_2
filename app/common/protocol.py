@@ -32,17 +32,22 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
-from typing import Any, Final
+from typing import Any
 
-LENGTH_PREFIX_SIZE: Final[int] = 4 #Bytes que ocupa el prefijo de longitud del header.
+# Bytes que ocupa el prefijo de longitud del header.
+LENGTH_PREFIX_SIZE = 4
 
-MAX_HEADER_SIZE: Final[int] = 64 * 1024 #Techo defensivo, para no reservar memoria ante un prefijo absurdo.
+# Techo defensivo, para no reservar memoria ante un prefijo absurdo.
+MAX_HEADER_SIZE = 64 * 1024
 
-MAX_PAYLOAD_SIZE: Final[int] = 32 * 1024 * 1024 #Límite del framing, no el de la aplicación.
+# Límite del framing, no el de la aplicación.
+MAX_PAYLOAD_SIZE = 32 * 1024 * 1024
 
-CHUNK_SIZE: Final[int] = 64 * 1024 #Bloque de transferencia, para acotar el uso de memoria.
+# Bloque de transferencia, para acotar el uso de memoria.
+CHUNK_SIZE = 64 * 1024
 
-PAYLOAD_SIZE_FIELD: Final[str] = "payload_size" #Campo donde se declara el tamaño del payload.
+# Campo donde se declara el tamaño del payload.
+PAYLOAD_SIZE_FIELD = "payload_size"
 
 ProgressCallback = Callable[[int, int], None] #Informa avance: (bytes transferidos, total).
 
