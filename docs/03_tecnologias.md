@@ -311,17 +311,52 @@ Cubre tres áreas:
 Es decir que `multiprocessing` no *es* IPC: es un módulo que permite crear procesos y
 que, además, ofrece implementaciones cómodas de varios mecanismos de IPC.
 
-### Cómo funciona `multiprocessing.Queue` por dentro
+### `Pipe` y `Queue`: cuál usar
 
-Por debajo **es un pipe**. Lo que agrega es una capa de comodidad: cuando hacés
-`put(objeto)`, la Queue lo **serializa** con `pickle` y escribe los bytes en el pipe;
-del otro lado `get()` los lee y **deserializa**, reconstruyendo el objeto. Por eso se
-puede mandar un diccionario y recibir un diccionario, en vez de armar y parsear bytes a
-mano. Además protege el pipe con locks internos, así varios procesos pueden escribir sin
-que los mensajes se entremezclen.
+Los dos sirven para lo mismo —pasarse objetos entre procesos— y los dos **serializan con
+`pickle`**: cuando enviás un objeto, se convierte a bytes de un lado y se reconstruye del
+otro. Por eso se puede mandar un diccionario y recibir un diccionario en vez de armar y
+parsear bytes a mano, y por eso **solo se pueden enviar objetos serializables**: un
+diccionario o una lista van bien; un socket abierto o una conexión a base de datos, no.
 
-Consecuencia práctica: **solo se pueden enviar objetos serializables**. Un diccionario o
-una lista van bien; un socket abierto o una conexión a base de datos, no.
+La diferencia está en para cuántos procesos son:
+
+| | `Pipe` | `Queue` |
+|---|---|---|
+| Extremos | dos, y nada más | los que haga falta |
+| Bidireccional | sí, un solo objeto | no: una cola por sentido |
+| Por dentro | el pipe del sistema operativo | un pipe **más** un candado y un hilo auxiliar |
+| Cuándo conviene | dos procesos que se hablan | varios productores o varios consumidores |
+
+`Queue` está construida encima de un `Pipe`: le agrega el candado para que varios
+procesos puedan escribir sin entremezclar mensajes, y un hilo interno que se encarga de
+escribir en el pipe para que `put()` nunca bloquee. Todo eso es útil cuando hay varios de
+cada lado, y es peso muerto cuando hay uno solo.
+
+En este proyecto el servidor y el proceso de ingreso son **exactamente dos procesos
+hablando en las dos direcciones**, así que se usa un `Pipe`. Si algún día hubiera varios
+procesos de ingreso leyendo del mismo canal, ahí la cola pasaría a ser la opción correcta.
+
+### Esperar un pipe sin frenar el event loop
+
+`recv()` bloquea hasta que llega algo, y bloquear dentro del event loop congela a todos
+los clientes conectados a la vez. `Connection` ofrece la salida: **`poll()` contesta al
+instante si hay datos**, sin esperar por ellos. Con eso, el que recibe puede ser una
+corrutina común:
+
+```python
+while True:
+    if not conexion.poll():             # ¿hay algo?
+        await asyncio.sleep(0.01)       # no: le devuelvo el control al event loop
+        continue
+    mensaje = conexion.recv()           # sí: recv() no va a bloquear
+```
+
+Es una espera activa, y conviene reconocerlo: el servidor mira cien veces por segundo
+aunque no pase nada. La alternativa sería un hilo que llame a `recv()` bloqueante, pero
+eso trae consigo el problema de cómo frenarlo —un hilo no se puede matar en Python— y la
+necesidad de cruzar los resultados del hilo al event loop. Cien comprobaciones por segundo
+salen más baratas que ese conjunto de complicaciones.
 
 ### Proceso o hilo: qué da uno que el otro no
 
@@ -639,7 +674,7 @@ distribuida.
 |---|---|
 | **Sockets TCP** | Comunicar procesos en máquinas distintas, de forma confiable |
 | **asyncio** | Atender muchos clientes a la vez sin un hilo por cliente |
-| **multiprocessing.Queue** | Pasar eventos al proceso proceso de ingreso sin bloquear el event loop |
+| **multiprocessing.Pipe** | Pasarle pedidos y eventos al proceso de ingreso, y recibir sus veredictos |
 | **Celery** | Encolar y distribuir trabajo pesado entre procesos independientes |
 | **Redis** | Almacenar la cola de tareas pendientes y el estado de cada una |
 | **SQLite** | Guardar el historial permanente sin administrar un servidor de BD |

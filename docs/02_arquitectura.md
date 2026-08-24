@@ -45,7 +45,7 @@ tabla es el resumen de la arquitectura:
 | Canal | Une | Alcance | Qué transporta |
 |---|---|---|---|
 | **Socket TCP** | cliente ↔ servidor | entre máquinas | pedidos e imágenes |
-| **multiprocessing.Queue** ×2 | servidor ↔ proceso de ingreso | misma máquina, procesos emparentados | pedidos de revisión, sus respuestas y los eventos |
+| **multiprocessing.Pipe** | servidor ↔ proceso de ingreso | misma máquina, procesos emparentados | pedidos de revisión, sus respuestas y los eventos |
 | **Redis** | servidor ↔ workers | entre máquinas, procesos sin relación | invocaciones y estados |
 | **Volumen compartido** | servidor ↔ workers ↔ ingreso | mismo sistema de archivos | los archivos de imagen |
 | **SQLite** | ingreso → servidor | mismo sistema de archivos | el historial ya persistido |
@@ -62,54 +62,68 @@ la información fluye igual en esa dirección. Es el camino por el que el servid
 recupera lo que ya no tiene en memoria — el historial, y los trabajos en curso después
 de un reinicio.
 
-### 3.1 El IPC en detalle: dos colas y una correlación
+### 3.1 El IPC en detalle: un pipe y una correlación
 
-El servidor y el proceso de ingreso se comunican con **dos `multiprocessing.Queue`**,
-una en cada sentido:
+El servidor y el proceso de ingreso se comunican con **un `multiprocessing.Pipe`**, que
+transporta las dos direcciones:
 
 ```
-                     cola de PEDIDOS  ──────────────►
+                       PEDIDOS  ──────────────────►
    ┌──────────────┐   {kind: "intake", job_id, …}   ┌──────────────────┐
    │   SERVIDOR   │   {kind: "event",  job_id, …}   │ PROCESO DE       │
-   │  (asyncio)   │                                  │ INGRESO          │
-   └──────────────┘   ◄──────  cola de RESPUESTAS   └──────────────────┘
+   │  (asyncio)   │                                 │ INGRESO          │
+   └──────────────┘   ◄──────────────  RESPUESTAS   └──────────────────┘
                        {job_id, result: "new" | "duplicate" | "invalid"}
 ```
 
-**Por la cola de pedidos viajan dos tipos de mensaje.** Los de tipo `event` son
-*sin respuesta*: el servidor los deposita y sigue, sin esperar nada. Los de tipo
-`intake` **sí esperan respuesta**, y por eso existe la segunda cola.
+**Por qué un pipe y no dos colas.** Acá hay exactamente dos procesos hablando en las dos
+direcciones, que es para lo que sirve un pipe: rápido, simple, punto a punto. Una
+`multiprocessing.Queue` está construida encima de un pipe más un candado y un hilo
+auxiliar, y todo eso resuelve un problema que este sistema no tiene —varios productores y
+varios consumidores compartiendo el canal—. Si algún día hubiera más de un proceso de
+ingreso, ahí sí convendría una cola.
 
-**Cómo confirma el hijo que la imagen es válida.** La cola de respuestas es de solo
-lectura para el servidor, y `get()` sobre ella bloquea — no se puede llamar dentro del
-event loop. El mecanismo es el siguiente:
+**Por el pipe viajan dos tipos de mensaje.** Los de tipo `event` son *sin respuesta*: el
+servidor los deposita y sigue. Los de tipo `intake` **sí esperan respuesta**, que vuelve
+por el mismo pipe en la dirección contraria.
+
+**Cómo confirma el hijo que la imagen es válida.** El problema a resolver es que `recv()`
+bloquea, y bloquear dentro del event loop congelaría a todos los clientes conectados. La
+salida es preguntar en lugar de esperar:
 
 ```python
 # Al arrancar el servidor: un diccionario de pedidos esperando respuesta
 pendientes: dict[str, asyncio.Future] = {}
 
 # Corrutina de fondo que corre todo el tiempo
-async def bomba_de_respuestas():
+async def receptor():
     while True:
-        resp = await asyncio.to_thread(respuestas.get)   # bloquea en un hilo aparte
+        if not conexion.poll():            # ¿hay algo? contesta al instante
+            await asyncio.sleep(0.01)      # no hay: le devuelve el control al loop
+            continue
+        resp = conexion.recv()             # ya sabemos que hay: no bloquea
         fut = pendientes.pop(resp["job_id"], None)
         if fut and not fut.done():
-            fut.set_result(resp)                          # despierta al submit
+            fut.set_result(resp)           # despierta al submit
 
 # En el handler de submit, dentro de la corrutina que atiende a ese cliente
 fut = asyncio.get_running_loop().create_future()
 pendientes[job_id] = fut
-pedidos.put({"kind": "intake", "job_id": job_id, "user": user,
-             "op": op, "params": params, "path": ruta})
-resp = await asyncio.wait_for(fut, timeout=30)            # ← acá espera la confirmación
+conexion.send({"kind": "intake", "job_id": job_id, "user": user,
+               "op": op, "params": params, "path": ruta})
+resp = await asyncio.wait_for(fut, timeout=30)          # ← acá espera la confirmación
 ```
 
 Las piezas son tres. El **`job_id` funciona como identificador de correlación**: es lo
 que permite saber a qué pedido corresponde cada respuesta, porque puede haber varios
 `submit` en curso al mismo tiempo. El **`Future`** es el punto donde la corrutina del
-cliente queda suspendida sin bloquear a nadie más. Y la **bomba de respuestas** es una
-única corrutina de fondo que hace de puente entre el mundo bloqueante de la cola y el
-event loop, usando `asyncio.to_thread` para que la espera ocurra en un hilo.
+cliente queda suspendida sin bloquear a nadie más. Y el **receptor** es una única
+corrutina de fondo que saca las respuestas del pipe y las reparte.
+
+`poll()` es lo que permite que el receptor sea una corrutina y no un hilo: contesta si
+hay datos sin esperar por ellos. El costo es una espera activa —cien miradas por segundo
+cuando no pasa nada—, y es un precio bajo comparado con el de introducir un hilo, con su
+apagado y su sincronización, en un servidor que por lo demás vive entero en un solo hilo.
 
 El `wait_for` con tiempo límite cubre el caso en que el hijo muera en el medio: el
 `submit` falla con error en lugar de quedarse esperando para siempre, y el servidor
@@ -151,8 +165,7 @@ Sus responsabilidades:
   responderle al cliente.
 - **Encolar la tarea** en Celery —solo si el ingreso la aprobó y no es duplicada—
   pasándole la ruta y los parámetros.
-- **Notificar los eventos posteriores** al proceso de ingreso por la
-  `multiprocessing.Queue`.
+- **Notificar los eventos posteriores** al proceso de ingreso por el pipe.
 - **Supervisar al proceso de ingreso** y relanzarlo si muere.
 - Mantener un **índice en memoria** de los trabajos aceptados desde que arrancó (usuario,
   operación, estado, ruta de salida). Es lo que le permite responder por un trabajo recién
@@ -197,7 +210,7 @@ fallado— que el servidor le va enviando después.
 2. El servidor genera el job_id y escribe los bytes en
    storage/uploads/<job_id>/.
 
-3. El servidor le pasa al proceso de ingreso, por la cola de pedidos:
+3. El servidor le pasa al proceso de ingreso, por el pipe:
    job_id, usuario, operación, parámetros y la ruta del archivo.
 
 4. El ingreso ABRE LA IMAGEN.
@@ -296,8 +309,8 @@ compress), donde cada etapa recibe la salida de la anterior.
 ### 4.5 Monitor de trabajos en curso
 
 Una corrutina de fondo dentro del servidor, necesaria por una limitación concreta: **los
-workers no pueden avisarle al proceso de ingreso**. Viven en otros contenedores, y la
-`multiprocessing.Queue` solo comunica procesos emparentados de la misma máquina.
+workers no pueden avisarle al proceso de ingreso**. Viven en otros contenedores, y un
+pipe solo comunica procesos emparentados de la misma máquina.
 
 El monitor mantiene la lista de los trabajos en vuelo y consulta periódicamente su estado
 en el result backend. Detecta **dos transiciones**: cuando un worker toma el trabajo
@@ -564,7 +577,7 @@ desenlaces y lo que se persiste en cada uno, está en la sección 4.3.
 | Requisito obligatorio | Dónde se cumple |
 |---|---|
 | Sockets, clientes múltiples concurrentes | `main/image_server.py` — `asyncio.start_server` sobre TCP, escuchando en IPv4 e IPv6 |
-| Mecanismos de IPC | dos `mp.Queue` (pedidos y respuestas) entre `main/intake_channel.py` e `intake/process.py` |
+| Mecanismos de IPC | un `mp.Pipe` bidireccional entre `main/intake_channel.py` e `intake/process.py` |
 | Asincronismo de I/O | asyncio en el servidor y en el cliente (streams en ambos) |
 | Cola de tareas distribuidas | Celery + Redis, tareas en `tasks.py` |
 | Parseo de argumentos CLI | argparse en `client/cli.py` y `server/main/cli.py` |

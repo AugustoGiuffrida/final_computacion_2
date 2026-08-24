@@ -1,8 +1,8 @@
 """El proceso de ingreso: revisa cada imagen antes de que el trabajo se encole.
 
 El proceso principal lo lanza una vez, al arrancar, y vive hasta que lo apaga. Toda su
-vida transcurre dentro de un bucle: sacar un pedido de la cola, resolverlo, poner la
-respuesta en la otra cola.
+vida transcurre dentro de un bucle: sacar un pedido del pipe, resolverlo, devolver la
+respuesta por el mismo pipe.
 
 Es un proceso y no un hilo por una única razón: aislamiento ante fallas. Acá se abre
 contenido que mandó un cliente cualquiera, con bibliotecas que por debajo son código
@@ -20,9 +20,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import signal
-from multiprocessing.queues import Queue
+from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any
 
 from app.server import ipc
 
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 HASH_BLOCK_SIZE = 64 * 1024
 
 
-def run_intake(requests: Queue[Any], responses: Queue[Any], log_level: int) -> None:
+def run_intake(connection: Connection, log_level: int) -> None:
     """Cuerpo del proceso hijo: atiende pedidos hasta que le avisan que termine.
 
     Es la función que `multiprocessing.Process` ejecuta del otro lado. Tiene que estar al
@@ -42,8 +41,8 @@ def run_intake(requests: Queue[Any], responses: Queue[Any], log_level: int) -> N
     cero y busca la función por su nombre.
 
     Args:
-        requests: Cola por donde llegan los `ReviewRequest` y, al final, el sentinela.
-        responses: Cola por donde se devuelven los `ReviewResponse`.
+        connection: Su extremo del pipe. Por el mismo camino llegan los pedidos y se
+            devuelven los veredictos: las dos direcciones son independientes.
         log_level: Nivel de registro, que se recibe en lugar de heredarse por la misma
             razón: con *spawn* el hijo arranca con el logging sin configurar, y sus
             mensajes se perderían sin que nadie se entere.
@@ -58,19 +57,25 @@ def run_intake(requests: Queue[Any], responses: Queue[Any], log_level: int) -> N
     # Ctrl-C no le llega solo al proceso principal: la señal va a todo el grupo de procesos
     # en primer plano, este incluido. Si se muriera acá, las revisiones en curso quedarían
     # sin respuesta y sus clientes esperando. Ignorándola, termina solo cuando el principal
-    # se lo pide por la cola, que es cuando ya no queda nada pendiente.
+    # se lo pide por el pipe, que es cuando ya no queda nada pendiente.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     logger.info("proceso de ingreso en marcha")
 
     while True:
-        request = requests.get()  # bloquea hasta que haya algo que hacer
+        try:
+            request = connection.recv()  # bloquea hasta que haya algo que hacer
+        except EOFError:
+            # El proceso principal cerró su extremo del pipe: se murió sin avisar. Sin
+            # este control el hijo quedaría vivo para siempre, hablándole a nadie.
+            logger.warning("el proceso principal desapareció")
+            return
 
         if request == ipc.SHUTDOWN:
             logger.info("el proceso principal pidió terminar")
             return
 
-        responses.put(review(request))
+        connection.send(review(request))
 
 
 def review(request: ipc.ReviewRequest) -> ipc.ReviewResponse:

@@ -454,7 +454,7 @@ parte del protocolo.
 
 **En el proceso de ingreso** (el servidor le envía el pedido y espera la respuesta):
 
-7. Recibe `{kind: "intake", job_id, user, op, params, path}` por la cola de pedidos.
+7. Recibe `{kind: "intake", job_id, user, op, params, path}` por el pipe.
 8. **Verifica** que sea una imagen válida abriéndola y decodificándola con Pillow. Si
    falla, responde `{job_id, result: "invalid", reason: "…"}`.
 9. **Calcula el `sha256`** del contenido del archivo.
@@ -665,7 +665,7 @@ Cliente                                             Servidor
    │                                                   │  genera job_id (UUID v4)
    │                                                   │  guarda uploads/a3f7…/foto.jpg
    │                                                   │       │
-   │                                                   │       │ cola de pedidos
+   │                                                   │       │ pipe: pedido
    │                                                   │       ▼   ┌──────────────┐
    │                                                   │  ─────────►│ INGRESO      │
    │                                                   │            │ verifica     │
@@ -674,7 +674,7 @@ Cliente                                             Servidor
    │                                                   │            │ inserta fila │
    │                                                   │  ◄─────────│              │
    │                                                   │   "new"    └──────────────┘
-   │                                                   │       cola de respuestas
+   │                                                   │       pipe: respuesta
    │                                                   │
    │                                                   │  encola la tarea en Celery
    │                                                   │  envía el evento `queued`

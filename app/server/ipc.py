@@ -1,10 +1,10 @@
-"""Lo que viaja por las colas entre el proceso principal y el proceso de ingreso.
+"""Lo que viaja por el pipe entre el proceso principal y el proceso de ingreso.
 
 Es lo único que los dos procesos conocen en común, y por eso está solo. Un vistazo a este
 archivo alcanza para saber todo lo que pueden decirse: dos estructuras y cinco constantes.
 
-Acá no hay comportamiento a propósito. Todo lo que se pone en una `multiprocessing.Queue`
-se serializa con `pickle` para cruzar al otro proceso, así que solo viajan datos planos:
+Acá no hay comportamiento a propósito. Todo lo que se manda por el pipe se serializa con
+`pickle` para cruzar al otro proceso, así que solo viajan datos planos:
 cadenas, números, diccionarios y rutas. Nunca un socket, un `StreamWriter` ni una corrutina.
 """
 
@@ -30,12 +30,12 @@ INVALID = "invalid"
 # cliente sobre de quién es la culpa.
 UNAVAILABLE = "unavailable"
 
-# El proceso principal lo pone en la cola de pedidos para que el hijo termine su bucle y
+# El proceso principal se lo manda por el pipe para que el hijo termine su bucle y
 # salga por las suyas, en vez de tener que matarlo.
 SHUTDOWN = "shutdown"
 
 
-# ────────────────────────── lo que viaja por las colas ──────────────────────────
+# ────────────────────────── lo que viaja por el pipe ──────────────────────────
 
 
 @dataclass
@@ -67,7 +67,7 @@ class ReviewResponse:
 
     Attributes:
         job_id: El mismo del pedido. Es lo que permite saber a qué pedido corresponde esta
-            respuesta: todas vuelven por una única cola y sin un orden garantizado.
+            respuesta: todas vuelven por el mismo pipe y sin un orden garantizado.
         verdict: NEW, DUPLICATE, INVALID o UNAVAILABLE.
         content_hash: SHA-256 del contenido, cuando se pudo calcular.
         detail: Explicación, cuando el veredicto no es NEW.
