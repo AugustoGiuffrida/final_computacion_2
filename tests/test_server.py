@@ -16,8 +16,59 @@ from typing import Any
 
 from app.client import session
 from app.common import config, messages, protocol
+from app.server import ipc
 from app.server.main import registry
 from app.server.main.image_server import ImageServer
+
+
+class FakeIntake:
+    """Un canal de ingreso que contesta lo que se le indique, sin lanzar ningún proceso.
+
+    El canal de verdad y el proceso hijo se prueban aparte, en `test_intake.py`. Acá lo
+    que se prueba es el servidor, y lanzar un proceso por prueba lo haría lento y —peor—
+    dejaría fuera de control qué veredicto llega, que es justo lo que hay que variar.
+
+    Attributes:
+        verdict: Qué veredicto devolver en cada revisión.
+        detail: La explicación que acompaña al veredicto.
+        reviewed: Los pedidos que recibió, en orden. Sirve para verificar que el servidor
+            manda lo que corresponde.
+    """
+
+    def __init__(self, verdict: str = ipc.NEW, detail: str | None = None) -> None:
+        """Prepara el canal falso.
+
+        Args:
+            verdict: Qué contestar. Por defecto acepta todo.
+            detail: Explicación del rechazo, cuando el veredicto no es NEW.
+        """
+        self.verdict = verdict
+        self.detail = detail
+        self.reviewed: list[ipc.ReviewRequest] = []
+
+    def start(self) -> None:
+        """No hace nada: no hay proceso que lanzar."""
+
+    async def review(self, request: ipc.ReviewRequest) -> ipc.ReviewResponse:
+        """Anota el pedido y devuelve el veredicto configurado.
+
+        Args:
+            request: El pedido que manda el servidor.
+
+        Returns:
+            El veredicto fijo de este canal falso.
+        """
+        self.reviewed.append(request)
+
+        return ipc.ReviewResponse(
+            job_id=request.job_id,
+            verdict=self.verdict,
+            content_hash="0" * 64,
+            detail=self.detail,
+        )
+
+    async def stop(self) -> None:
+        """No hace nada: no hay proceso que apagar."""
 
 
 class ServerTestCase(unittest.IsolatedAsyncioTestCase):
@@ -41,16 +92,38 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
         """Borra el directorio temporal."""
         self._temporary_directory.cleanup()
 
-    async def running_server(self, host: str | None = "127.0.0.1") -> ImageServer:
-        """Levanta un servidor en un puerto libre.
+    def an_image(self, name: str = "foto.jpg", size: int = 200_000) -> Path:
+        """Crea un archivo de prueba del tamaño pedido.
+
+        Args:
+            name: Nombre del archivo.
+            size: Cuántos bytes escribirle.
+
+        Returns:
+            La ruta del archivo creado.
+        """
+        image = self.working_directory / name
+        image.write_bytes(b"\xff\xd8\xff\xe0" + b"x" * (size - 4))
+
+        return image
+
+    async def running_server(
+        self, host: str | None = "127.0.0.1", intake: FakeIntake | None = None
+    ) -> ImageServer:
+        """Levanta un servidor en un puerto libre, con un ingreso de mentira.
 
         Args:
             host: Dirección de escucha. `None` para todas las interfaces.
+            intake: Canal de ingreso a usar. Por defecto uno que acepta todo.
 
         Returns:
             El servidor ya escuchando.
         """
-        server = ImageServer(host, 0, storage_dir=self.working_directory)
+        server = ImageServer(
+            host, 0,
+            storage_dir=self.working_directory,
+            intake=intake if intake is not None else FakeIntake(),
+        )
         await server.start()
 
         self._servers.append(server)
@@ -398,20 +471,6 @@ class HistoryRequest(ServerTestCase):
 class SubmitRequest(ServerTestCase):
     """El pedido `submit`: recibir una imagen y registrar el trabajo."""
 
-    def an_image(self, name: str = "foto.jpg", size: int = 200_000) -> Path:
-        """Crea un archivo de prueba del tamaño pedido.
-
-        Args:
-            name: Nombre del archivo.
-            size: Cuántos bytes escribirle.
-
-        Returns:
-            La ruta del archivo creado.
-        """
-        image = self.working_directory / name
-        image.write_bytes(b"\xff\xd8\xff\xe0" + b"x" * (size - 4))
-        return image
-
     async def test_an_accepted_image_returns_a_new_job(self) -> None:
         """Un envío válido devuelve un identificador y el trabajo queda encolado."""
         server = await self.running_server()
@@ -571,6 +630,90 @@ class SubmitRequest(ServerTestCase):
         response = await self.submit_with_filename(server, "script.sh")
 
         self.assertEqual(response["code"], messages.INVALID_IMAGE)
+
+# ──────────────────────── la revisión del proceso de ingreso ────────────────────────
+
+
+class IntakeVerdict(ServerTestCase):
+    """Qué hace `submit` con cada veredicto del proceso de ingreso."""
+
+    async def test_an_accepted_image_is_registered_with_its_hash(self) -> None:
+        """El veredicto positivo deja el trabajo registrado y guarda el hash."""
+        intake = FakeIntake(verdict=ipc.NEW)
+        server = await self.running_server(intake=intake)
+        client = await self.connected_client(server)
+
+        response = await client.submit(self.an_image(), "clean", {})
+
+        job = server.jobs.find("augusto", response["job_id"])
+        self.assertEqual(job.status, messages.QUEUED)
+        self.assertEqual(job.content_hash, "0" * 64)
+
+    async def test_the_intake_receives_what_the_client_asked_for(self) -> None:
+        """El pedido de revisión lleva el usuario, la operación y la ruta del archivo."""
+        intake = FakeIntake()
+        server = await self.running_server(intake=intake)
+        client = await self.connected_client(server)
+
+        await client.submit(self.an_image(), "anonymize", {"mode": "blur"})
+
+        self.assertEqual(len(intake.reviewed), 1)
+        review = intake.reviewed[0]
+        self.assertEqual(review.user, "augusto")
+        self.assertEqual(review.operation, "anonymize")
+        self.assertEqual(review.parameters, {"mode": "blur"})
+        self.assertTrue(review.stored_path.exists())
+
+    async def test_a_rejected_image_does_not_become_a_job(self) -> None:
+        """Si el ingreso la rechaza, el cliente recibe el error y no queda trabajo."""
+        server = await self.running_server(
+            intake=FakeIntake(verdict=ipc.INVALID, detail="el archivo está corrupto")
+        )
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(raised.exception.code, messages.INVALID_IMAGE)
+        self.assertIn("corrupto", raised.exception.message)
+        self.assertEqual(len(server.jobs), 0)
+
+    async def test_a_rejected_image_leaves_nothing_on_disk(self) -> None:
+        """El archivo recibido se borra: sin trabajo que lo use, es basura."""
+        server = await self.running_server(intake=FakeIntake(verdict=ipc.INVALID))
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError):
+            await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(list(server.uploads_dir.iterdir()), [])
+
+    async def test_an_intake_failure_is_reported_as_our_problem(self) -> None:
+        """UNAVAILABLE no es culpa de la imagen, así que no se responde INVALID_IMAGE.
+
+        Distinguirlos importa: al cliente le cambia si tiene que revisar su archivo o
+        volver a intentar más tarde.
+        """
+        server = await self.running_server(
+            intake=FakeIntake(verdict=ipc.UNAVAILABLE, detail="el ingreso no contestó")
+        )
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(raised.exception.code, messages.INTERNAL)
+        self.assertEqual(len(server.jobs), 0)
+
+    async def test_the_connection_survives_a_rejection(self) -> None:
+        """Un rechazo del ingreso no rompe el diálogo: el pedido siguiente anda."""
+        server = await self.running_server(intake=FakeIntake(verdict=ipc.INVALID))
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError):
+            await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(await client.history(config.DEFAULT_HISTORY_LIMIT), [])
 
 # ──────────────────────── consulta y descarga ────────────────────────
 

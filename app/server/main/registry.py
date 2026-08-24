@@ -29,6 +29,9 @@ class Job:
             metadatos se eliminaron—, o None si todavía no terminó. No entra en el
             resumen: el historial lista trabajos, no resultados.
         output_path: Dónde quedó el archivo producido, o None si todavía no hay.
+        content_hash: SHA-256 del contenido, calculado por el proceso de ingreso. Es lo
+            que permite reconocer que dos envíos son la misma imagen aunque lleguen con
+            nombres distintos. No entra en el resumen: es un dato interno.
     """
 
     job_id: str
@@ -42,6 +45,7 @@ class Job:
     error: str | None = None
     result: dict[str, Any] | None = None
     output_path: Path | None = None
+    content_hash: str | None = None
 
     def as_summary(self) -> dict[str, Any]:
         """Devuelve la vista del trabajo que viaja hacia el cliente.

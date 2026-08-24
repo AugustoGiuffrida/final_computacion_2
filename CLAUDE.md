@@ -58,7 +58,13 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
 3. `app/server/main/` — el proceso principal, completo: `cli.py` (arranque, señales),
    `image_server.py` (handler y despachador), `incoming.py` (validación de lo que llega),
    `outgoing.py` (armado de lo que sale) y `registry.py` (índice en memoria de trabajos).
-4. `tests/` — 97 pruebas sobre `unittest`, con servidores reales en localhost.
+4. `app/server/ipc.py` e `app/server/intake/process.py` — el proceso de ingreso y el
+   vocabulario del pipe. Calcula el SHA-256 de cada imagen que entra; falta la
+   verificación con Pillow y la deduplicación con SQLite.
+5. `app/server/main/intake_channel.py` — el canal con el proceso hijo, ya cableado a
+   `handle_submit`: toda imagen pasa por la revisión antes de que el trabajo se acepte.
+6. `tests/` — 119 pruebas sobre `unittest`, con servidores y procesos hijos reales.
+7. `docs/05_demostracion.md` — recorrido de demostración, comando por comando.
 
 `app/server/` se divide en `main/` (proceso principal) e `intake/` (proceso hijo), con lo
 compartido en la raíz. La separación no es cosmética: el hijo importa Pillow y `sqlite3`,
@@ -103,20 +109,26 @@ como "la aplicación" o "el sistema".
 
 ## 3. Arquitectura en breve
 
-Dos mitades a ritmos distintos, unidas por una cola: una **atiende** (I/O, tiene que ser
+Dos mitades a ritmos distintos, unidas por un pipe: una **atiende** (I/O, tiene que ser
 rápida siempre) y otra **procesa** (CPU, tarda segundos por imagen).
 
 ```
-Clientes CLI ──socket TCP──► Servidor (asyncio) ──2×mp.Queue──► Proceso de ingreso
+Clientes CLI ──socket TCP──► Servidor (asyncio) ───mp.Pipe───► Proceso de ingreso
                                    │                                    │
                                    └──► Redis (cola) ──► Workers        └──► SQLite
                                               │              │
                                               └──────────────┴──► Volumen compartido
 ```
 
-Cinco canales, cada uno con su alcance: socket TCP (entre máquinas), `mp.Queue` (procesos
-emparentados de la misma máquina), Redis (procesos sin relación), volumen compartido (los
-archivos), SQLite (el historial, que el ingreso escribe y el servidor lee).
+Cinco canales, cada uno con su alcance: socket TCP (entre máquinas), `mp.Pipe` (dos
+procesos emparentados de la misma máquina), Redis (procesos sin relación), volumen
+compartido (los archivos), SQLite (el historial, que el ingreso escribe y el servidor lee).
+
+**Pipe y no `mp.Queue`**: son dos procesos hablando en las dos direcciones, que es
+exactamente para lo que sirve un pipe. `Queue` está hecha encima de un pipe más un candado
+y un hilo auxiliar, y eso resuelve un problema —varios productores o consumidores— que este
+sistema no tiene. El material de la cátedra lo dice igual: pipes para dos procesos, colas
+para muchos.
 
 El detalle completo está en `docs/`. **Consultarlo antes de tomar cualquier decisión de
 diseño**, porque casi todo ya está resuelto y justificado ahí.
@@ -131,6 +143,7 @@ diseño**, porque casi todo ya está resuelto y justificado ahí.
 | `docs/02_arquitectura.md` | componentes, canales, IPC, modelo de datos, módulos, flujo |
 | `docs/03_tecnologias.md` | qué es cada tecnología y por qué se eligió frente a alternativas |
 | `docs/04_protocolo.md` | especificación del protocolo cliente-servidor |
+| `docs/05_demostracion.md` | recorrido para mostrar el sistema funcionando, paso a paso |
 | `docs/img/arquitectura.svg` | diagrama, embebido en `02` |
 
 Separación entre documentos, respetada estrictamente: **`03`** explica tecnologías (qué es

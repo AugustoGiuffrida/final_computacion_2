@@ -34,12 +34,15 @@ from app.common import config, messages, protocol
 from app.common.messages import (
     BadRequest,
     InternalError,
+    InvalidImage,
     NoOutput,
     NotReady,
     RequestError,
     TooLarge,
 )
+from app.server import ipc
 from app.server.main import incoming, outgoing, registry
+from app.server.main.intake_channel import IntakeChannel
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,7 @@ class ImageServer:
         uploads_dir: Dónde se guardan las imágenes recibidas, una carpeta por trabajo.
         connected_clients: Cuántas conexiones hay abiertas en este momento.
         jobs: Registro en memoria de los trabajos aceptados.
+        intake: El canal con el proceso de ingreso, que revisa cada imagen que entra.
     """
 
     def __init__(
@@ -67,6 +71,7 @@ class ImageServer:
         host: str | None = config.LISTEN_ON_ALL_INTERFACES,
         port: int = config.DEFAULT_PORT,
         storage_dir: Path = config.STORAGE_DIR,
+        intake: IntakeChannel | None = None,
     ) -> None:
         """Prepara el servidor sin abrir todavía el socket de escucha.
 
@@ -76,6 +81,8 @@ class ImageServer:
             storage_dir: Raíz de los archivos. Las imágenes recibidas van a su
                 subdirectorio `uploads/`. Se puede cambiar para no escribir en el
                 directorio real del proyecto, que es lo que hacen las pruebas.
+            intake: El canal con el proceso de ingreso. Se puede pasar uno con un hijo
+                falso para que las pruebas no lancen un proceso de verdad en cada una.
         """
         self.host = host
         self.port = port
@@ -83,6 +90,12 @@ class ImageServer:
         self.uploads_dir = storage_dir / "uploads"
         self.connected_clients = 0
         self.jobs = registry.JobRegistry()
+
+        # El canal por defecto se crea acá y no en la firma: un valor por defecto se
+        # evalúa una sola vez, al importar el módulo, y todos los servidores terminarían
+        # compartiendo el mismo canal y el mismo proceso hijo.
+        self.intake = intake if intake is not None else IntakeChannel()
+
         self._server: asyncio.Server | None = None
 
     # ─────────────────────── ciclo de vida ───────────────────────
@@ -118,6 +131,10 @@ class ImageServer:
                 format_address(address), listening_socket.family.name,
             )
 
+        # Después de los sockets: si el puerto estaba ocupado, `start_server` ya falló y
+        # no quedó ningún proceso hijo dando vueltas que haya que ir a matar.
+        self.intake.start()
+
     @property
     def listening_port(self) -> int:
         """Puerto en el que el servidor quedó escuchando.
@@ -149,6 +166,11 @@ class ImageServer:
 
         self._server.close()
         await self._server.wait_closed()
+
+        # Último, porque las conexiones que se están terminando de atender pueden estar
+        # esperando un veredicto: el ingreso tiene que seguir vivo hasta que no quede
+        # ninguna.
+        await self.intake.stop()
         logger.info("servidor detenido")
 
     async def serve_until_stopped(self, stop_requested: asyncio.Event) -> None:
@@ -358,9 +380,13 @@ class ImageServer:
         van a descartarse. Como una validación fallida dejaría el payload sin leer y
         desfasaría el mensaje siguiente, se consume antes de propagar el rechazo.
 
+        Antes de aceptar el trabajo, la imagen pasa por el proceso de ingreso, que la
+        revisa y devuelve su veredicto. Si la rechaza, el archivo se borra y el trabajo no
+        se registra.
+
         ESTADO: el trabajo queda en `QUEUED` y nada lo hace avanzar; falta la cola de
-        tareas. Y `deduplicated` es siempre falso: detectar repetidos es tarea del proceso
-        de ingreso, que tampoco existe todavía.
+        tareas. Y `deduplicated` es siempre falso: detectar repetidos necesita la base de
+        datos, que todavía no existe.
 
         Args:
             header: Header del pedido.
@@ -374,6 +400,8 @@ class ImageServer:
         Raises:
             RequestError: Si el pedido es inválido en cualquiera de sus campos; la
                 subclase depende de qué campo falle.
+            InvalidImage: Si el proceso de ingreso rechaza la imagen.
+            InternalError: Si el proceso de ingreso no pudo revisarla.
             asyncio.IncompleteReadError: Si la transferencia se corta antes de completar
                 los bytes anunciados.
         """
@@ -391,16 +419,37 @@ class ImageServer:
 
         job = registry.new_job(user, operation, parameters, filename)
         job_directory = self.uploads_dir / job.job_id
+        stored_path = job_directory / filename
 
         try:
-            await incoming.save_upload(reader, payload_size, job_directory / filename)
+            await incoming.save_upload(reader, payload_size, stored_path)
+
+            verdict = await self.intake.review(ipc.ReviewRequest(
+                job_id=job.job_id,
+                user=user,
+                operation=operation,
+                parameters=parameters,
+                stored_path=stored_path,
+            ))
+
+            if verdict.verdict == ipc.INVALID:
+                raise InvalidImage(
+                    verdict.detail or "el archivo no es una imagen válida"
+                )
+            if verdict.verdict == ipc.UNAVAILABLE:
+                raise InternalError(
+                    verdict.detail or "no se pudo revisar la imagen"
+                )
+
         except BaseException:
-            # Ni el archivo a medias ni el directorio sirven si el trabajo no prospera.
+            # Nada de lo que quedó en disco sirve si el trabajo no prospera: ni el archivo
+            # a medias de una transferencia cortada, ni la imagen que el ingreso rechazó.
             # Se atrapa BaseException y no Exception porque una cancelación de la tarea
             # llega como CancelledError, que no hereda de Exception.
             shutil.rmtree(job_directory, ignore_errors=True)
             raise
 
+        job.content_hash = verdict.content_hash
         self.jobs.add(job)
         logger.info(
             "trabajo %s aceptado: '%s' sobre '%s' (%d bytes)",
