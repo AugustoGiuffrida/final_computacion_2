@@ -1,39 +1,54 @@
 # Guion de demostración
 
-Recorrido para mostrar el sistema funcionando, paso a paso. Cada paso dice **qué
-demuestra**, el comando y qué mirar en la salida.
+Recorrido corto para mostrar el sistema funcionando: **un solo envío de imagen**, siguiendo
+qué hace cada parte. Al final hay un apéndice con lo que se puede mostrar si hay preguntas.
 
-Hacen falta **dos terminales**: una con el servidor corriendo a la vista —su registro es
-la mitad de la demostración— y otra para los comandos.
+Hacen falta **dos terminales**: una con el servidor a la vista —su registro es la mitad de
+la demostración— y otra para los comandos. Todo se ejecuta desde la raíz del repositorio.
 
-Todos los comandos se ejecutan desde la raíz del repositorio.
+---
+
+## Quién es quién
+
+Tres piezas, cada una en su proceso:
+
+```
+   TERMINAL 2                      TERMINAL 1
+   ┌──────────┐   socket TCP    ┌──────────────┐      pipe      ┌──────────────┐
+   │ CLIENTE  │ ──────────────► │   SERVIDOR   │ ─────────────► │  INGRESO     │
+   │          │ ◄────────────── │  (principal) │ ◄───────────── │  (hijo)      │
+   └──────────┘                 └──────────────┘                └──────────────┘
+    otra máquina                  atiende a todos                 revisa la imagen
+    en principio                  los clientes a la vez           sin bloquear a nadie
+```
+
+| Pieza | Qué hace | Qué **no** hace |
+|---|---|---|
+| **Cliente** | arma el pedido, manda la imagen, muestra la respuesta | nada de lógica del servicio |
+| **Servidor** | atiende N clientes a la vez, valida, guarda el archivo, responde | **nunca abre una imagen** |
+| **Ingreso** | abre el contenido y lo revisa: hoy calcula su SHA-256 | no habla con los clientes |
+
+La regla que explica el reparto: **el que atiende a los clientes nunca toca contenido no
+confiable.** Abrir una imagen que mandó cualquiera puede tumbar el proceso, y si eso pasara
+en el servidor se caerían todas las conexiones abiertas. Por eso se hace en un proceso
+aparte, que puede morirse sin arrastrar a nadie.
 
 ---
 
 ## Preparación
 
-Cuatro archivos de prueba, más una copia exacta de uno de ellos:
+Una imagen de prueba:
 
 ```bash
-./venv/bin/python - <<'FIN'
-from pathlib import Path
-for numero in range(4):
-    Path(f"/tmp/prueba_{numero}.jpg").write_bytes(
-        b"\xff\xd8\xff\xe0" + bytes([numero]) * 400_000
-    )
-FIN
-cp /tmp/prueba_0.jpg /tmp/copia.jpg
+./venv/bin/python -c "from pathlib import Path; Path('/tmp/foto.jpg').write_bytes(b'\xff\xd8\xff\xe0' + b'x' * 300_000)"
 ```
 
-Cada archivo pesa 400 KB, lo bastante para que la transferencia ocurra en varios bloques.
-`copia.jpg` tiene el contenido idéntico a `prueba_0.jpg` con otro nombre: sirve para el
-paso 6.
+Sirve cualquier `.jpg` o `.png` real; esta pesa 300 KB, lo bastante para que la
+transferencia ocurra en varios bloques.
 
 ---
 
-## 1. Arrancar el servidor
-
-**Qué demuestra:** que al arrancar lanza su proceso hijo y abre sus sockets de escucha.
+## Paso 1 — Arrancar el servidor
 
 En la **terminal 1**:
 
@@ -43,249 +58,142 @@ En la **terminal 1**:
 
 | Parámetro | Qué hace |
 |---|---|
-| `--port 9876` | puerto de escucha. Por defecto es 9000; se usa otro para no chocar con nada |
-| `--storage-dir /tmp/demo` | dónde guardar las imágenes recibidas, en vez del `storage/` del repositorio |
-| `--host` | *no se usa acá*: al omitirlo escucha en **todas** las interfaces, que es lo que hace que abra IPv4 e IPv6 |
-| `--verbose` | agrega el detalle de cada mensaje al registro |
+| `--port 9876` | puerto de escucha (por defecto 9000) |
+| `--storage-dir /tmp/demo` | dónde guardar las imágenes, en vez del `storage/` del repositorio |
+| `--host` | *se omite a propósito*: sin él escucha en **todas** las interfaces, IPv4 e IPv6 |
 
-**Qué mirar:**
+**Lo que aparece:**
 
 ```
 escuchando en 0.0.0.0:9876 (AF_INET)
 escuchando en :::9876 (AF_INET6)
-proceso de ingreso lanzado (pid 54504)
+proceso de ingreso lanzado (pid 59616)
 [ingreso] proceso de ingreso en marcha
 ```
 
-Dos líneas de escucha, una por familia de direcciones. Y el proceso de ingreso, que se
-lanza solo, antes de que llegue ningún cliente.
+Cuatro líneas y ya están las tres cosas que importan: **dos sockets** —uno por familia de
+direcciones, mismo puerto—, y **el proceso hijo**, que se lanza al arrancar y no cuando
+llega el primer cliente.
+
+Para verlos desde afuera, en la **terminal 2**:
+
+```bash
+SERVIDOR=$(pgrep -f "app.server --port 9876")
+lsof -nP -p $SERVIDOR -a -iTCP -sTCP:LISTEN
+ps -o pid,ppid,args -p $SERVIDOR $(pgrep -P $SERVIDOR) | sed 's|[^ ]*/Python ||'
+```
+
+```
+Python  59613 augusto  7u  IPv6  …  TCP *:9876 (LISTEN)
+Python  59613 augusto  8u  IPv4  …  TCP *:9876 (LISTEN)
+
+  PID  PPID ARGS
+59613 59610 -m app.server --port 9876 --storage-dir /tmp/demo
+59615 59613 -c from multiprocessing.resource_tracker import main;main(11)
+59616 59613 -c from multiprocessing.spawn import spawn_main; spawn_main(…)
+```
+
+Un solo proceso con **dos descriptores de escucha**, y dos hijos: el de ingreso —cuyo PID
+es el que anunció el registro— y un `resource_tracker` que `multiprocessing` crea por su
+cuenta para llevar la cuenta de los recursos compartidos.
 
 ---
 
-## 2. Los procesos
-
-**Qué demuestra:** que hay dos procesos, y que el de ingreso es hijo del principal.
+## Paso 2 — Enviar la imagen
 
 En la **terminal 2**:
 
 ```bash
-SERVIDOR=$(pgrep -f "app.server --port 9876")
-ps -o pid,ppid,args -p $SERVIDOR $(pgrep -P $SERVIDOR) | sed 's|[^ ]*/Python ||'
-```
-
-| Parte | Qué hace |
-|---|---|
-| `pgrep -f "…"` | busca el PID del proceso cuya línea de comando coincide |
-| `pgrep -P $SERVIDOR` | lista los PID de sus **hijos** (`-P` = *parent*) |
-| `ps -o pid,ppid,args` | muestra el PID, el del padre y la línea de comando |
-| `sed 's\|[^ ]*/Python \|\|'` | recorta la ruta del intérprete, que ocupa media pantalla |
-
-**Qué mirar:**
-
-```
-  PID  PPID ARGS
-54501 54498 -m app.server --port 9876 --storage-dir /tmp/demo
-54503 54501 -c from multiprocessing.resource_tracker import main;main(11)
-54504 54501 -c from multiprocessing.spawn import spawn_main; spawn_main(…)
-```
-
-Los dos últimos tienen `PPID 54501`: son hijos del servidor. El `resource_tracker` lo crea
-`multiprocessing` por su cuenta para llevar la cuenta de los recursos compartidos; **el de
-ingreso es el otro**, y su PID es el que anunció el registro en el paso 1.
-
----
-
-## 3. Los sockets de escucha
-
-**Qué demuestra:** IPv4 e IPv6 a la vez, en un solo proceso y un solo puerto.
-
-```bash
-lsof -nP -p $SERVIDOR -a -iTCP -sTCP:LISTEN
-```
-
-| Parámetro | Qué hace |
-|---|---|
-| `-p $SERVIDOR` | solo los archivos abiertos por ese proceso |
-| `-iTCP` | solo sockets de red TCP |
-| `-sTCP:LISTEN` | solo los que están escuchando, no las conexiones establecidas |
-| `-a` | combina las condiciones con **y** en lugar de con **o**, que es el defecto de `lsof` |
-| `-n -P` | no traduce direcciones a nombres ni puertos a servicios: se ven los números |
-
-**Qué mirar:**
-
-```
-Python  54501 augusto  7u  IPv6  …  TCP *:9876 (LISTEN)
-Python  54501 augusto  8u  IPv4  …  TCP *:9876 (LISTEN)
-```
-
-El mismo PID, el mismo puerto, **dos descriptores** (7 y 8) y dos familias. `asyncio`
-abre un socket por familia cuando no se le da un host concreto.
-
----
-
-## 4. Enviar una imagen
-
-**Qué demuestra:** el camino completo de un envío, incluida la revisión del proceso hijo.
-
-```bash
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/prueba_0.jpg --op anonymize --mode blur
+    --action submit --file /tmp/foto.jpg --op anonymize --mode blur
 ```
 
 | Parámetro | Qué hace |
 |---|---|
-| `--user ana` | con qué usuario se declara el trabajo. No hay autenticación: es quien dice ser |
-| `--host 127.0.0.1` | dirección del servidor, **por IPv4** |
-| `--action submit` | enviar una imagen. Es el único pedido que lleva payload |
-| `--file` | la imagen a enviar |
-| `--op anonymize` | la operación a aplicar |
+| `--user ana` | con qué usuario se declara el trabajo (no hay autenticación) |
+| `--host 127.0.0.1 --port 9876` | a qué servidor conectarse |
+| `--action submit` | enviar una imagen: el único pedido que lleva archivo |
+| `--op anonymize` | qué hacerle |
 | `--mode blur` | parámetro de `anonymize`: cómo cubrir las caras |
 
-**Qué mirar en la terminal 1:**
+**Lo que ve el cliente:**
 
 ```
-conectado 127.0.0.1:54299 (1 en total)
-pedido 'submit' (400004 bytes de payload)
-[ingreso] a1b2c3d4-… revisado: 49fe9a7f59d7
-trabajo a1b2c3d4-… aceptado: 'anonymize' sobre 'prueba_0.jpg' (400004 bytes)
+╭──────────────── Imagen aceptada ────────────────╮
+│   Trabajo  7cbb592e-45c0-4841-a6bc-029c535550b4 │
+│    Estado  ◷ QUEUED                             │
+│ Operación  anonymize                            │
+│    Imagen  foto.jpg (293.0 KB)                  │
+╰─────────────────────────────────────────────────╯
 ```
 
-El orden importa: **primero revisa el hijo, después el principal acepta**. Si el hijo
-rechazara la imagen, no habría línea de "aceptado" y el archivo se borraría.
+**Y en la terminal 1, el recorrido completo:**
 
-Anotá el identificador del trabajo: hace falta en el paso 9.
+```
+conectado 127.0.0.1:54968 (1 en total)                     ← 1. el servidor acepta
+pedido 'submit' (300004 bytes de payload)                  ← 2. lee el header
+[ingreso] 7cbb592e-… revisado: 49fe9a7f59d7                ← 3. el HIJO revisa
+trabajo 7cbb592e-… aceptado: 'anonymize' sobre 'foto.jpg'  ← 4. el servidor acepta
+desconectado 127.0.0.1:54968                               ← 5. el cliente cierra
+```
+
+Línea por línea:
+
+1. **El servidor acepta la conexión.** El contador entre paréntesis lleva cuántas hay
+   abiertas al mismo tiempo; con un solo cliente, una.
+2. **Lee el header y sabe cuánto payload viene.** Cada mensaje empieza con su longitud,
+   porque TCP entrega un flujo continuo de bytes sin marcas de dónde termina uno y empieza
+   el siguiente. El servidor lee esos 300.004 bytes **de a bloques**, escribiéndolos en
+   disco a medida que llegan: nunca tiene la imagen entera en memoria.
+3. **El hijo la revisa.** El servidor le manda por el pipe el identificador y **la ruta del
+   archivo**, no los bytes: los dos procesos ven el mismo disco, copiar la imagen por un
+   pipe sería trabajo al pedo. El hijo la abre, calcula su SHA-256 y devuelve el veredicto.
+4. **Recién ahora el servidor acepta el trabajo** y le responde al cliente. El orden
+   importa: si el hijo la hubiera rechazado, no habría línea de "aceptado", el archivo se
+   borraría y el cliente recibiría un error.
+5. El cliente cierra la conexión y termina.
+
+**Dónde quedó la imagen:**
+
+```bash
+find /tmp/demo -type f
+```
+
+```
+/tmp/demo/uploads/7cbb592e-45c0-4841-a6bc-029c535550b4/foto.jpg
+```
+
+Un directorio por trabajo, nombrado con su identificador. El nombre original se conserva
+adentro, pero lo que identifica al archivo es el **UUID**, que el servidor generó y que no
+es adivinable ni enumerable.
 
 ---
 
-## 5. Varios clientes a la vez, por las dos familias
-
-**Qué demuestra:** que el servidor atiende N clientes concurrentes sobre un solo hilo, y
-que responde por IPv4 y por IPv6 indistintamente.
-
-```bash
-for numero in 1 2 3; do
-    ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-        --action submit --file /tmp/prueba_$numero.jpg --op clean &
-done
-for numero in 1 2 3; do
-    ./venv/bin/python -m app.client --user luis --host ::1 --port 9876 \
-        --action submit --file /tmp/prueba_$numero.jpg --op inspect &
-done
-```
-
-El `&` del final manda cada cliente al fondo, así los seis arrancan a la vez en lugar de
-uno después del otro. Tres van por IPv4 (`127.0.0.1`) y tres por IPv6 (`::1`) — **la misma
-dirección de escucha, las dos familias**.
-
-**Qué mirar en la terminal 1:**
-
-```
-conectado 127.0.0.1:54301 (1 en total)
-conectado ::1:54302 (2 en total)
-conectado 127.0.0.1:54303 (3 en total)
-…
-trabajo … aceptado: 'inspect' sobre 'prueba_3.jpg'
-trabajo … aceptado: 'clean'   sobre 'prueba_1.jpg'
-trabajo … aceptado: 'inspect' sobre 'prueba_2.jpg'
-```
-
-Dos cosas. El contador de conexiones sube: hubo **seis abiertas al mismo tiempo**. Y los
-trabajos se aceptan **entremezclados**, no en el orden en que se lanzaron: es asyncio
-alternando entre las corrutinas cada vez que una espera en un `await`.
-
----
-
-## 6. La misma imagen con otro nombre
-
-**Qué demuestra:** que el proceso de ingreso identifica el contenido, no el nombre. Es el
-cimiento de la deduplicación.
+## Paso 3 — Consultar el estado
 
 ```bash
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/copia.jpg --op clean
+    --action status --job-id 7cbb592e-45c0-4841-a6bc-029c535550b4
 ```
 
-**Qué mirar en la terminal 1:** comparar el hash de esta línea con el de `prueba_0.jpg`
-del paso 4.
+Reemplazá el identificador por el que devolvió el paso 2.
 
 ```
-[ingreso] a1b2c3d4-… revisado: 49fe9a7f59d7    ← prueba_0.jpg
-[ingreso] e5f6a7b8-… revisado: 49fe9a7f59d7    ← copia.jpg, mismo hash
+╭───────────────────────────────────────────────╮
+│ Trabajo  7cbb592e-45c0-4841-a6bc-029c535550b4 │
+│  Estado  ◷ QUEUED                             │
+╰───────────────────────────────────────────────╯
 ```
 
-Dos archivos con nombres distintos y el mismo SHA-256. Cuando exista la base de datos, el
-segundo envío no generará un trabajo nuevo: devolverá el identificador del primero.
+Sigue en `QUEUED`, y va a seguir así: **no hay nada que procese los trabajos todavía**. Esa
+es la parte que falta —los workers— y conviene decirlo antes de que lo pregunten.
 
-Para ver que un contenido distinto da otro hash, cualquiera de los `prueba_N.jpg` del paso
-5 sirve de contraste.
-
----
-
-## 7. El historial
-
-**Qué demuestra:** el pedido `history`, que lista los trabajos del usuario del más
-reciente al más antiguo.
+Si se pide la descarga, el servidor lo explica en lugar de fallar:
 
 ```bash
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action history --limit 5
+    --action download --job-id 7cbb592e-45c0-4841-a6bc-029c535550b4
 ```
-
-`--limit 5` acota cuántos devolver. El servidor lo recorta a 100 aunque se pida más: un
-límite disparatado no se rechaza, se ajusta.
-
-**Qué mirar:** todos los trabajos figuran en `QUEUED`, y la columna de terminación está
-vacía. Es lo esperado en esta etapa: no hay nada que los procese todavía.
-
----
-
-## 8. Cada usuario ve solo lo suyo
-
-**Qué demuestra:** la regla de propiedad, que se aplica en cada pedido.
-
-Primero, el historial de `luis`, para copiar uno de sus identificadores:
-
-```bash
-./venv/bin/python -m app.client --user luis --host ::1 --port 9876 --action history
-```
-
-Y ahora `ana` pide un trabajo de `luis` (reemplazá el identificador):
-
-```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action status --job-id EL-ID-DE-LUIS
-```
-
-**Qué mirar:**
-
-```
-╭─ El servidor rechazó el pedido (FORBIDDEN) ─╮
-│ ese trabajo pertenece a otro usuario        │
-╰─────────────────────────────────────────────╯
-```
-
-El servidor distingue "no existe" de "no es tuyo", y responde códigos distintos:
-`JOB_NOT_FOUND` y `FORBIDDEN`.
-
----
-
-## 9. Consultar y descargar
-
-**Qué demuestra:** los pedidos `status` y `download`, y el estado actual del sistema.
-
-```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action status --job-id EL-ID-DEL-PASO-4
-```
-
-```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action download --job-id EL-ID-DEL-PASO-4 -o /tmp/resultado.jpg
-```
-
-`-o` indica dónde guardar; si se omite se usa el nombre que sugiera el servidor.
-
-**Qué mirar:** la consulta responde `QUEUED`, y la descarga responde:
 
 ```
 ╭────────── El servidor rechazó el pedido (NOT_READY) ──────────╮
@@ -293,19 +201,89 @@ El servidor distingue "no existe" de "no es tuyo", y responde códigos distintos
 ╰───────────────────────────────────────────────────────────────╯
 ```
 
-Es **el comportamiento correcto** para lo que hay implementado: sin workers, ningún
-trabajo llega a `DONE`. El camino completo de la descarga está escrito y probado; lo que
-falta es quien mueva el trabajo hasta ahí.
+El camino completo de la descarga está escrito y probado; lo que falta es quien lleve el
+trabajo hasta `DONE`.
 
 ---
 
-## 10. Un pedido rechazado no rompe la conexión
+## Paso 4 — Apagar
 
-**Qué demuestra:** que un rechazo es una respuesta más, y el cliente puede seguir usando la
-misma conexión.
+En la **terminal 1**, `Ctrl-C`.
 
-Esto no se puede hacer con el cliente, que valida antes de enviar: hay que hablarle al
-servidor directamente.
+```
+[ingreso] el proceso principal pidió terminar
+proceso de ingreso terminado
+servidor detenido
+```
+
+El apagado no es matar procesos: el servidor deja de aceptar conexiones, espera a que se
+cierren las abiertas, y le **pide** al hijo que termine mandándole un mensaje por el pipe.
+El hijo sale por las suyas. Solo si no obedeciera en cinco segundos se lo cortaría por la
+fuerza.
+
+---
+
+# Apéndice: si hay preguntas
+
+Cada punto es independiente y se muestra en menos de un minuto.
+
+### «¿Atiende a varios clientes a la vez?»
+
+```bash
+for numero in 1 2 3 4 5 6; do
+    ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+        --action submit --file /tmp/foto.jpg --op clean &
+done
+```
+
+El `&` los lanza a todos juntos. En el registro se ve el contador subir —`(6 en total)`— y
+los trabajos aceptándose **entremezclados**, no en el orden en que salieron: es asyncio
+alternando entre corrutinas en cada `await`, sobre un solo hilo.
+
+### «¿Soporta IPv6?»
+
+El mismo comando cambiando la dirección:
+
+```bash
+./venv/bin/python -m app.client --user ana --host ::1 --port 9876 \
+    --action submit --file /tmp/foto.jpg --op clean
+```
+
+En el registro la conexión figura como `::1:puerto` en vez de `127.0.0.1:puerto`. Es el
+mismo servidor y el mismo puerto: los dos sockets del paso 1.
+
+### «¿Detecta imágenes repetidas?»
+
+Todavía no, pero el hash ya se calcula. Una copia del mismo archivo con otro nombre:
+
+```bash
+cp /tmp/foto.jpg /tmp/copia.jpg
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file /tmp/copia.jpg --op clean
+```
+
+En el registro, la línea `revisado:` termina con el **mismo hash** que la de `foto.jpg`.
+Cuando exista la base de datos, ese es el dato con el que se buscará el envío anterior.
+
+### «¿Un usuario puede ver los trabajos de otro?»
+
+```bash
+./venv/bin/python -m app.client --user otro --host 127.0.0.1 --port 9876 \
+    --action status --job-id EL-ID-DE-ANA
+```
+
+```
+╭─ El servidor rechazó el pedido (FORBIDDEN) ─╮
+│ ese trabajo pertenece a otro usuario        │
+╰─────────────────────────────────────────────╯
+```
+
+El servidor distingue "no existe" de "no es tuyo", y responde códigos distintos.
+
+### «¿Qué pasa si un pedido está mal formado?»
+
+Se responde el error y **la conexión sigue sirviendo**. El cliente valida antes de enviar,
+así que hay que hablarle al servidor directamente:
 
 ```bash
 ./venv/bin/python - <<'FIN'
@@ -316,14 +294,11 @@ async def main():
     lector, escritor = await asyncio.open_connection("127.0.0.1", 9876)
 
     await protocol.send_message(escritor, {"type": "borrar_todo", "user": "ana"})
-    print("tipo inexistente  →", (await protocol.receive_header(lector))["message"])
-
-    await protocol.send_message(escritor, {"type": "history"})
-    print("sin usuario       →", (await protocol.receive_header(lector))["message"])
+    print("tipo inexistente →", (await protocol.receive_header(lector))["message"])
 
     await protocol.send_message(escritor, {"type": "history", "user": "ana", "limit": 3})
     respuesta = await protocol.receive_header(lector)
-    print("y sigue viva      →", len(respuesta["jobs"]), "trabajos en el historial")
+    print("y sigue viva     →", len(respuesta["jobs"]), "trabajos")
 
     escritor.close()
     await escritor.wait_closed()
@@ -332,96 +307,40 @@ asyncio.run(main())
 FIN
 ```
 
-**Qué mirar:**
+Un pedido rechazado es una respuesta más, no una caída. La única excepción es un payload
+demasiado grande: ahí sí se corta, porque quedarían bytes sin leer en el socket y el
+mensaje siguiente se leería corrido.
 
-```
-tipo inexistente  → tipo de pedido desconocido: 'borrar_todo'
-sin usuario       → falta el campo 'user' o está vacío
-y sigue viva      → 3 trabajos en el historial
-```
-
-Dos pedidos rechazados y el tercero funciona **por la misma conexión**. El servidor
-distingue un pedido inválido de una conexión rota. La única excepción es un payload
-demasiado grande: ahí sí corta, porque quedarían bytes sin leer en el socket y el mensaje
-siguiente se leería corrido.
-
----
-
-## 11. Si el proceso de ingreso muere
-
-**Qué demuestra:** el aislamiento entre procesos, y que el sistema se recupera solo.
+### «¿Y si el proceso de ingreso se muere?»
 
 ```bash
-INGRESO=$(pgrep -P $SERVIDOR -f spawn_main)
-kill -9 $INGRESO
+kill -9 $(pgrep -P $SERVIDOR -f spawn_main)
 ```
 
-`kill -9` manda **SIGKILL**, la única señal que un proceso no puede atrapar ni ignorar. Es
-la forma de simular una muerte violenta, como la que provocaría una imagen preparada para
-tumbar a la biblioteca que la abre.
-
-**Qué mirar en la terminal 1:**
+`kill -9` manda **SIGKILL**, la única señal que un proceso no puede atrapar. Simula una
+muerte violenta, como la que provocaría una imagen preparada para tumbar a la biblioteca
+que la abre.
 
 ```
 ERROR  el proceso de ingreso murió con código -9; se relanza
-INFO   proceso de ingreso lanzado (pid 54601)
-[ingreso] proceso de ingreso en marcha
+INFO   proceso de ingreso lanzado (pid 59701)
 ```
 
-El código `-9` es la señal que lo mató, en negativo: así se distingue un proceso que
-terminó (código 0) de uno al que terminaron. **El servidor siguió atendiendo** — de eso se
-trata que el ingreso sea un proceso aparte y no un hilo.
+El servidor **siguió atendiendo** —de eso se trata que el ingreso sea un proceso aparte— y
+lo reemplazó solo. El código `-9` es la señal que lo mató, en negativo: así se distingue un
+proceso que terminó (código 0) de uno al que terminaron.
 
-Y un envío nuevo se atiende normalmente:
-
-```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/prueba_2.jpg --op clean
-```
-
----
-
-## 12. Apagado ordenado
-
-**Qué demuestra:** que el apagado no es matar procesos, sino pedirles que terminen.
-
-En la **terminal 1**, `Ctrl-C`. O desde la terminal 2:
-
-```bash
-kill -TERM $SERVIDOR
-```
-
-`SIGTERM` es la señal de "terminá cuando puedas", y el servidor la atiende: deja de aceptar
-conexiones, espera a que se cierren las abiertas, y recién entonces le pide al hijo que
-salga.
-
-**Qué mirar:**
-
-```
-INFO   desconectado 127.0.0.1:54655
-[ingreso] el proceso principal pidió terminar
-INFO   proceso de ingreso terminado
-INFO   servidor detenido
-```
-
-El hijo sale **por las suyas**, porque el pedido le llega por el pipe como un mensaje más.
-Solo si no obedeciera en cinco segundos se lo cortaría por la fuerza.
+Un envío nuevo se atiende normalmente.
 
 ---
 
 ## Lo que todavía no está
 
-Conviene decirlo antes de que lo pregunten:
-
-- **Los trabajos se quedan en `QUEUED` para siempre.** Falta la cola de tareas (Celery +
-  Redis) y los workers, que son los que abren la imagen y la transforman.
-- **`deduplicated` siempre responde falso.** El hash ya se calcula, pero buscar un envío
-  anterior con el mismo hash necesita la base de datos.
-- **El proceso de ingreso todavía no verifica** que el archivo sea una imagen válida: para
-  eso hace falta Pillow. Hoy calcula el hash y acepta.
+- **Los trabajos se quedan en `QUEUED`.** Falta la cola de tareas (Celery + Redis) y los
+  workers, que son los que abren la imagen y la transforman.
+- **No se detectan duplicados.** El hash ya se calcula; falta la base de datos donde
+  buscarlo.
+- **El ingreso todavía no verifica** que el archivo sea una imagen válida: para eso hace
+  falta Pillow.
 - **El historial se pierde al reiniciar**, porque vive en memoria. SQLite es lo que lo hace
   permanente.
-
-Lo que sí funciona de punta a punta: el cliente, el proceso principal con sus sockets IPv4
-e IPv6, el protocolo completo con sus cuatro pedidos, y el proceso de ingreso con su
-comunicación por pipe.
