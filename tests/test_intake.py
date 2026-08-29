@@ -23,7 +23,7 @@ from unittest import mock
 
 from PIL import Image
 
-from app.server import ipc
+from app.server import database, ipc
 from app.server.intake import process
 from app.server.main import intake_channel
 from app.server.main.intake_channel import IntakeChannel
@@ -32,7 +32,7 @@ from app.server.main.intake_channel import IntakeChannel
 # ──────────────────────── hijos de mentira ────────────────────────
 
 
-def child_that_accepts(connection, log_level: int) -> None:
+def child_that_accepts(connection, log_level: int, database_path) -> None:
     """Acepta todo lo que le llega, al instante."""
     while True:
         request = connection.recv()
@@ -45,7 +45,7 @@ def child_that_accepts(connection, log_level: int) -> None:
         )
 
 
-def child_that_rejects(connection, log_level: int) -> None:
+def child_that_rejects(connection, log_level: int, database_path) -> None:
     """Rechaza todo lo que le llega."""
     while True:
         request = connection.recv()
@@ -58,7 +58,7 @@ def child_that_rejects(connection, log_level: int) -> None:
         )
 
 
-def child_that_never_answers(connection, log_level: int) -> None:
+def child_that_never_answers(connection, log_level: int, database_path) -> None:
     """Recibe los pedidos y no contesta nunca. Provoca el vencimiento del plazo."""
     while True:
         request = connection.recv()
@@ -66,14 +66,14 @@ def child_that_never_answers(connection, log_level: int) -> None:
             return
 
 
-def child_that_dies_on_first_request(connection, log_level: int) -> None:
+def child_that_dies_on_first_request(connection, log_level: int, database_path) -> None:
     """Se muere apenas le piden algo, sin contestar."""
     request = connection.recv()
     if request != ipc.SHUTDOWN:
         raise SystemExit(1)
 
 
-def child_that_sends_garbage(connection, log_level: int) -> None:
+def child_that_sends_garbage(connection, log_level: int, database_path) -> None:
     """Contesta el primer pedido con algo que no es un veredicto, y el resto bien.
 
     Simula que del otro lado del pipe llegue cualquier cosa: un mensaje corrupto, una
@@ -93,7 +93,7 @@ def child_that_sends_garbage(connection, log_level: int) -> None:
             )
 
 
-def child_that_answers_backwards(connection, log_level: int) -> None:
+def child_that_answers_backwards(connection, log_level: int, database_path) -> None:
     """Junta tres pedidos y los contesta al revés, para forzar el desorden."""
     acumulados = []
     while True:
@@ -176,6 +176,13 @@ class IntakeTestCase(unittest.IsolatedAsyncioTestCase):
         Image.new("RGB", (60, 40), color).save(path, image_format)
 
         return path
+
+    def a_writer(self) -> database.JobWriter:
+        """Abre una base en el directorio temporal de la prueba."""
+        writer = database.JobWriter(self.working_directory / "jobs.db")
+        self.addCleanup(writer.close)
+
+        return writer
 
     def a_request(self, job_id: str = "job-1", filename: str = "foto.jpg"):
         """Arma un pedido de revisión sobre una imagen que existe.
@@ -449,7 +456,7 @@ class ImageVerification(IntakeTestCase):
         fake.write_bytes(b"no soy una imagen")
 
         response = process.review(
-            ipc.ReviewRequest("job-1", "augusto", "clean", {}, fake)
+            ipc.ReviewRequest("job-1", "augusto", "clean", {}, fake), self.a_writer()
         )
 
         self.assertEqual(response.verdict, ipc.INVALID)
@@ -465,7 +472,7 @@ class ImageVerification(IntakeTestCase):
             response = process.review(
                 ipc.ReviewRequest(
                     "job-1", "augusto", "clean", {}, self.working_directory / "nada.jpg"
-                )
+                ), self.a_writer()
             )
 
         self.assertEqual(response.verdict, ipc.UNAVAILABLE)
@@ -511,7 +518,7 @@ class RealChildWork(IntakeTestCase):
         )
 
         with self.assertLogs(level="ERROR"):
-            response = process.review(request)
+            response = process.review(request, self.a_writer())
 
         self.assertEqual(response.verdict, ipc.UNAVAILABLE)
         self.assertEqual(response.job_id, "job-1")
@@ -521,7 +528,7 @@ class RealChildWork(IntakeTestCase):
         image = self.an_image()
 
         response = process.review(
-            ipc.ReviewRequest("job-9", "augusto", "clean", {}, image)
+            ipc.ReviewRequest("job-9", "augusto", "clean", {}, image), self.a_writer()
         )
 
         self.assertEqual(response.verdict, ipc.NEW)

@@ -40,7 +40,7 @@ from app.common.messages import (
     RequestError,
     TooLarge,
 )
-from app.server import ipc
+from app.server import database, ipc
 from app.server.main import incoming, outgoing, registry
 from app.server.main.intake_channel import IntakeChannel
 
@@ -89,12 +89,18 @@ class ImageServer:
         self.storage_dir = storage_dir
         self.uploads_dir = storage_dir / "uploads"
         self.connected_clients = 0
-        self.jobs = registry.JobRegistry()
+        database_path = storage_dir / config.DATABASE_NAME
+
+        # El registro busca primero en memoria y cae a la base cuando el trabajo es de una
+        # ejecución anterior. El hijo escribe esa misma base; acá solo se lee.
+        self.jobs = registry.JobRegistry(database.JobReader(database_path))
 
         # El canal por defecto se crea acá y no en la firma: un valor por defecto se
         # evalúa una sola vez, al importar el módulo, y todos los servidores terminarían
         # compartiendo el mismo canal y el mismo proceso hijo.
-        self.intake = intake if intake is not None else IntakeChannel()
+        self.intake = (
+            intake if intake is not None else IntakeChannel(database_path=database_path)
+        )
 
         self._server: asyncio.Server | None = None
 
@@ -436,6 +442,22 @@ class ImageServer:
             # llega como CancelledError, que no hereda de Exception.
             shutil.rmtree(job_directory, ignore_errors=True)
             raise
+
+        if verdict.verdict == ipc.DUPLICATE:
+            # Este usuario ya procesó este mismo contenido con esta misma operación. La
+            # copia recién recibida no sirve para nada: el resultado ya está en disco bajo
+            # el trabajo original.
+            shutil.rmtree(job_directory, ignore_errors=True)
+            original = self.jobs.find(user, verdict.original_job_id)
+
+            logger.info("%s duplica a %s; se descarta", job.job_id, original.job_id)
+            await protocol.send_message(writer, {
+                messages.TYPE_FIELD: messages.OK,
+                "job_id": original.job_id,
+                "status": original.status,
+                "deduplicated": True,
+            })
+            return
 
         job.content_hash = verdict.content_hash
         self.jobs.add(job)

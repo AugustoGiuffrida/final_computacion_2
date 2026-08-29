@@ -1,3 +1,7 @@
+# La base y los dos archivos auxiliares que crea el modo WAL.
+storage/*.db
+storage/*.db-*
+
 storage/uploads/*
 storage/results/*
 !storage/uploads/.gitkeep

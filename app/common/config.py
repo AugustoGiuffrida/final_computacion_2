@@ -38,6 +38,10 @@ UPLOADS_DIR = STORAGE_DIR / "uploads"
 # Procesadas, en un subdirectorio por trabajo.
 RESULTS_DIR = STORAGE_DIR / "results"
 
+# La base va debajo del directorio de almacenamiento, así apuntar `--storage-dir` a otro
+# lado —que es lo que hacen las pruebas— se lleva la base con él.
+DATABASE_NAME = "jobs.db"
+
 # ─────────────────────────── imágenes ───────────────────────────
 
 # Validación de conveniencia del cliente, para fallar temprano y sin molestar al

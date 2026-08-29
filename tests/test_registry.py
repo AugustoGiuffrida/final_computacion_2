@@ -8,7 +8,11 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
+import tempfile
+from pathlib import Path
+
 from app.common import messages
+from app.server import database, ipc
 from app.server.main.registry import Job, JobRegistry, format_timestamp, new_job
 
 
@@ -182,6 +186,63 @@ class Listing(unittest.TestCase):
         listed = registry.list_for("augusto", 2)
 
         self.assertEqual([job.operation for job in listed], ["compress", "clean"])
+
+
+
+class ResolutionAgainstTheArchive(unittest.TestCase):
+    """Cuando el trabajo no está en memoria, se lo busca en la base."""
+
+    def setUp(self) -> None:
+        """Crea una base temporal con un trabajo dentro."""
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.working_directory = Path(self._temporary_directory.name)
+        self.database_path = self.working_directory / "jobs.db"
+
+        writer = database.JobWriter(self.database_path)
+        writer.insert(
+            ipc.ReviewRequest(
+                job_id="job-viejo",
+                user="ana",
+                operation="clean",
+                parameters={},
+                stored_path=self.working_directory / "foto.jpg",
+            ),
+            "c" * 64,
+        )
+        writer.close()
+
+        self.addCleanup(self._temporary_directory.cleanup)
+
+    def test_a_job_from_a_previous_run_is_found(self) -> None:
+        """Un trabajo que no está en memoria se recupera de la base.
+
+        Es lo que permite consultar el estado de algo enviado antes de reiniciar el
+        servidor, en vez de responder que no existe.
+        """
+        registro = JobRegistry(database.JobReader(self.database_path))
+
+        job = registro.find("ana", "job-viejo")
+
+        self.assertEqual(job.operation, "clean")
+        self.assertEqual(job.content_hash, "c" * 64)
+
+    def test_the_ownership_rule_applies_to_the_archive_too(self) -> None:
+        """Venir de la base no exime de la regla de propiedad."""
+        registro = JobRegistry(database.JobReader(self.database_path))
+
+        with self.assertRaises(messages.RequestError) as raised:
+            registro.find("luis", "job-viejo")
+
+        self.assertEqual(raised.exception.code, messages.FORBIDDEN)
+
+    def test_without_an_archive_only_memory_is_searched(self) -> None:
+        """Un registro sin base es solo memoria, que es lo que usan las pruebas."""
+        registro = JobRegistry()
+
+        with self.assertRaises(messages.RequestError) as raised:
+            registro.find("ana", "job-viejo")
+
+        self.assertEqual(raised.exception.code, messages.JOB_NOT_FOUND)
 
 
 if __name__ == "__main__":

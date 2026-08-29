@@ -58,12 +58,13 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
 3. `app/server/main/` — el proceso principal, completo: `cli.py` (arranque, señales),
    `image_server.py` (handler y despachador), `incoming.py` (validación de lo que llega),
    `outgoing.py` (armado de lo que sale) y `registry.py` (índice en memoria de trabajos).
-4. `app/server/ipc.py` e `app/server/intake/process.py` — el proceso de ingreso y el
-   vocabulario del pipe. Verifica cada imagen con Pillow y calcula su SHA-256; falta la
-   deduplicación y la persistencia, que necesitan SQLite.
+4. `app/server/ipc.py`, `app/server/database.py` (+ `schema.sql`) y
+   `app/server/intake/process.py` — el proceso de ingreso: verifica la imagen con Pillow,
+   calcula su SHA-256, busca duplicados y registra el trabajo en SQLite. Falta persistir
+   los eventos del ciclo de vida, que dependen de los workers.
 5. `app/server/main/intake_channel.py` — el canal con el proceso hijo, ya cableado a
    `handle_submit`: toda imagen pasa por la revisión antes de que el trabajo se acepte.
-6. `tests/` — 127 pruebas sobre `unittest`, con servidores y procesos hijos reales.
+6. `tests/` — 144 pruebas sobre `unittest`, con servidores, procesos hijos y bases reales.
 7. `docs/05_demostracion.md` — recorrido de demostración, comando por comando.
 
 `app/server/` se divide en `main/` (proceso principal) e `intake/` (proceso hijo), con lo

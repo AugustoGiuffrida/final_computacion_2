@@ -508,8 +508,9 @@ final_comp2/
 │   │   └── formatting.py    # colores, tamaños y fechas                        [hecho]
 │   ├── server/
 │   │   ├── __main__.py      # punto de entrada de `python -m app.server`       [hecho]
-│   │   ├── ipc.py           # COMPARTIDO por los dos procesos: qué viaja por
-│   │   │                    #   las colas                                 [pendiente]
+│   │   ├── ipc.py           # COMPARTIDO: qué viaja por el pipe                [hecho]
+│   │   ├── database.py      # COMPARTIDO: el escritor y el lector de SQLite    [hecho]
+│   │   ├── schema.sql       # las dos tablas y el índice de deduplicación      [hecho]
 │   │   ├── main/            # ── lo que corre en el proceso principal ──
 │   │   │   ├── cli.py       # argparse, registro de actividad y apagado        [hecho]
 │   │   │   ├── image_server.py  # asyncio.start_server, handler y despachador  [hecho]
@@ -518,12 +519,11 @@ final_comp2/
 │   │   │   ├── registry.py  # resolución de trabajos: índice en memoria +
 │   │   │   │                #   lecturas a SQLite                             [a medias]
 │   │   │   ├── intake_channel.py  # lanzar, consultar y supervisar al
-│   │   │   │                #   proceso hijo                              [pendiente]
+│   │   │   │                #   proceso hijo                                  [hecho]
 │   │   │   └── jobs.py      # puente con Celery: encolar, consultar estado,
 │   │   │                    #   monitoreo de trabajos en vuelo             [pendiente]
 │   │   └── intake/          # ── lo que corre en el proceso de ingreso ──
-│   │       ├── process.py   # el bucle: verificación, hash, deduplicación [pendiente]
-│   │       └── database.py  # el único escritor de SQLite                 [pendiente]
+│   │       └── process.py   # el bucle: verificación, hash, deduplicación     [hecho]
 │   └── worker/
 │       ├── celery_app.py    # instancia y configuración de Celery          [pendiente]
 │       └── tasks.py         # tareas Pillow/OpenCV, una por operación      [pendiente]

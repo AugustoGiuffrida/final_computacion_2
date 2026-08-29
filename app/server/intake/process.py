@@ -10,8 +10,8 @@ nativo; ante una imagen preparada para eso, la falla no llega como una excepció
 sino como la muerte del intérprete. Siendo un proceso aparte, muere este y el principal
 sigue atendiendo a todos sus clientes.
 
-ESTADO: verifica la imagen y calcula su hash. Falta la búsqueda de duplicados en SQLite,
-que es la que produce el veredicto `duplicate`.
+ESTADO: verifica la imagen, calcula su hash, busca duplicados y registra el trabajo.
+Falta persistir los eventos del ciclo de vida, que necesitan que exista quien los produzca.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from pathlib import Path
 from PIL import Image
 
 from app.common import config
-from app.server import ipc
+from app.server import database, ipc
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class InvalidImageError(Exception):
     """
 
 
-def run_intake(connection: Connection, log_level: int) -> None:
+def run_intake(connection: Connection, log_level: int, database_path: Path) -> None:
     """Cuerpo del proceso hijo: atiende pedidos hasta que le avisan que termine.
 
     Es la función que `multiprocessing.Process` ejecuta del otro lado. Tiene que estar al
@@ -56,6 +56,8 @@ def run_intake(connection: Connection, log_level: int) -> None:
         log_level: Nivel de registro, que se recibe en lugar de heredarse por la misma
             razón: con *spawn* el hijo arranca con el logging sin configurar, y sus
             mensajes se perderían sin que nadie se entere.
+        database_path: Dónde está la base. Se recibe en vez de leerla de la configuración
+            para que las pruebas puedan apuntar a una temporal.
     """
     logging.basicConfig(
         level=log_level, format="%(asctime)s [ingreso] %(levelname)s %(message)s"
@@ -67,25 +69,32 @@ def run_intake(connection: Connection, log_level: int) -> None:
     # se lo pide por el pipe, que es cuando ya no queda nada pendiente.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-    logger.info("proceso de ingreso en marcha")
+    records = database.JobWriter(database_path)
+    logger.info("proceso de ingreso en marcha, base en %s", database_path)
 
-    while True:
-        try:
-            request = connection.recv()  # bloquea hasta que haya algo que hacer
-        except EOFError:
-            # El proceso principal cerró su extremo del pipe: se murió sin avisar. Sin
-            # este control el hijo quedaría vivo para siempre, hablándole a nadie.
-            logger.warning("el proceso principal desapareció")
-            return
+    try:
+        while True:
+            try:
+                request = connection.recv()  # bloquea hasta que haya algo que hacer
+            except EOFError:
+                # El proceso principal cerró su extremo del pipe: se murió sin avisar.
+                # Sin este control el hijo quedaría vivo para siempre, hablándole a nadie.
+                logger.warning("el proceso principal desapareció")
+                return
 
-        if request == ipc.SHUTDOWN:
-            logger.info("el proceso principal pidió terminar")
-            return
+            if request == ipc.SHUTDOWN:
+                logger.info("el proceso principal pidió terminar")
+                return
 
-        connection.send(review(request))
+            connection.send(review(request, records))
+
+    finally:
+        records.close()
 
 
-def review(request: ipc.ReviewRequest) -> ipc.ReviewResponse:
+def review(
+    request: ipc.ReviewRequest, records: database.JobWriter
+) -> ipc.ReviewResponse:
     """Resuelve un pedido de revisión y arma la respuesta.
 
     Distingue dos clases de problema: que el archivo del cliente no sirva (INVALID) y que
@@ -100,6 +109,12 @@ def review(request: ipc.ReviewRequest) -> ipc.ReviewResponse:
         image_format = verify_image(request.stored_path)
         content_hash = hash_of(request.stored_path)
 
+        original = records.find_duplicate(
+            request.user, content_hash, request.operation, request.parameters
+        )
+        if original is None:
+            records.insert(request, content_hash)
+
     except InvalidImageError as rejection:
         logger.info("%s rechazado: %s", request.job_id, rejection)
         return ipc.ReviewResponse(
@@ -112,6 +127,15 @@ def review(request: ipc.ReviewRequest) -> ipc.ReviewResponse:
             job_id=request.job_id,
             verdict=ipc.UNAVAILABLE,
             detail=f"la revisión falló: {failure}",
+        )
+
+    if original is not None:
+        logger.info("%s duplica a %s", request.job_id, original)
+        return ipc.ReviewResponse(
+            job_id=request.job_id,
+            verdict=ipc.DUPLICATE,
+            content_hash=content_hash,
+            original_job_id=original,
         )
 
     logger.info("%s revisado: %s, %s", request.job_id, image_format, content_hash[:12])

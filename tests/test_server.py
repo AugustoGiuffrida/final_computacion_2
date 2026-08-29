@@ -35,15 +35,22 @@ class FakeIntake:
             manda lo que corresponde.
     """
 
-    def __init__(self, verdict: str = ipc.NEW, detail: str | None = None) -> None:
+    def __init__(
+        self,
+        verdict: str = ipc.NEW,
+        detail: str | None = None,
+        original_job_id: str | None = None,
+    ) -> None:
         """Prepara el canal falso.
 
         Args:
             verdict: Qué contestar. Por defecto acepta todo.
             detail: Explicación del rechazo, cuando el veredicto no es NEW.
+            original_job_id: A qué trabajo duplica, cuando el veredicto es DUPLICATE.
         """
         self.verdict = verdict
         self.detail = detail
+        self.original_job_id = original_job_id
         self.reviewed: list[ipc.ReviewRequest] = []
 
     def start(self) -> None:
@@ -65,6 +72,7 @@ class FakeIntake:
             verdict=self.verdict,
             content_hash="0" * 64,
             detail=self.detail,
+            original_job_id=self.original_job_id,
         )
 
     async def stop(self) -> None:
@@ -704,6 +712,36 @@ class IntakeVerdict(ServerTestCase):
 
         self.assertEqual(raised.exception.code, messages.INTERNAL)
         self.assertEqual(len(server.jobs), 0)
+
+    async def test_a_duplicate_returns_the_original_job(self) -> None:
+        """Un envío repetido responde el identificador del trabajo que ya existía."""
+        server = await self.running_server()
+        original = registry.new_job("augusto", "clean", {}, "foto.jpg")
+        server.jobs.add(original)
+
+        server.intake.verdict = ipc.DUPLICATE
+        server.intake.original_job_id = original.job_id
+
+        client = await self.connected_client(server)
+        response = await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(response["job_id"], original.job_id)
+        self.assertTrue(response["deduplicated"])
+
+    async def test_a_duplicate_does_not_leave_a_second_copy(self) -> None:
+        """La imagen recién recibida se borra: el resultado ya está bajo el original."""
+        server = await self.running_server()
+        original = registry.new_job("augusto", "clean", {}, "foto.jpg")
+        server.jobs.add(original)
+
+        server.intake.verdict = ipc.DUPLICATE
+        server.intake.original_job_id = original.job_id
+
+        client = await self.connected_client(server)
+        await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(list(server.uploads_dir.iterdir()), [])
+        self.assertEqual(len(server.jobs), 1)
 
     async def test_the_connection_survives_a_rejection(self) -> None:
         """Un rechazo del ingreso no rompe el diálogo: el pedido siguiente anda."""

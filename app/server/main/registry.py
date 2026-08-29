@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from typing import Any
 
 from app.common import messages
 from app.common.messages import Forbidden, JobNotFound
+from app.server import database
 
 
 @dataclass
@@ -117,6 +119,32 @@ def new_job(
     )
 
 
+def job_from_row(row: dict[str, Any]) -> Job:
+    """Reconstruye un trabajo a partir de su fila en la base.
+
+    Args:
+        row: Los campos tal como los devuelve `database.JobReader`.
+
+    Returns:
+        El trabajo, con los textos de la base ya convertidos a `datetime` y `Path`.
+    """
+    return Job(
+        job_id=row["id"],
+        user=row["user"],
+        operation=row["op"],
+        parameters=json.loads(row["params"]),
+        filename=row["filename"] or "",
+        status=row["status"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        finished_at=(
+            datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None
+        ),
+        error=row["error"],
+        output_path=Path(row["result_path"]) if row["result_path"] else None,
+        content_hash=row["sha256"],
+    )
+
+
 class JobRegistry:
     """Los trabajos que el servidor aceptó desde que arrancó.
 
@@ -129,9 +157,16 @@ class JobRegistry:
     corrutinas nunca modifican el registro a la vez.
     """
 
-    def __init__(self) -> None:
-        """Crea un registro vacío."""
+    def __init__(self, archive: database.JobReader | None = None) -> None:
+        """Crea un registro vacío.
+
+        Args:
+            archive: De dónde sacar los trabajos que no estén en memoria, típicamente de
+                ejecuciones anteriores del servidor. Sin él, el registro es solo memoria,
+                que es lo que alcanza para las pruebas.
+        """
         self._jobs: dict[str, Job] = {}
+        self._archive = archive
 
     def __len__(self) -> int:
         """Devuelve cuántos trabajos hay registrados."""
@@ -168,6 +203,12 @@ class JobRegistry:
             Forbidden: Si el trabajo es de otro usuario.
         """
         job = self._jobs.get(job_id)
+
+        if job is None and self._archive is not None:
+            # No está en memoria: puede ser de una ejecución anterior del servidor.
+            stored = self._archive.find(job_id)
+            if stored is not None:
+                job = job_from_row(stored)
 
         if job is None:
             raise JobNotFound(f"no existe un trabajo con el identificador '{job_id}'")

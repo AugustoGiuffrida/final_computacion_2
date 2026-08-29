@@ -269,16 +269,53 @@ mismo servidor y el mismo puerto: los dos sockets del paso 1.
 
 ### «¿Detecta imágenes repetidas?»
 
-Todavía no, pero el hash ya se calcula. Una copia del mismo archivo con otro nombre:
+Sí, comparando el contenido y no el nombre. Como la deduplicación solo reutiliza trabajos
+**terminados** y todavía no hay workers que los terminen, hay que marcar uno a mano —es lo
+que haría un worker al acabar:
 
 ```bash
-cp /tmp/foto.jpg /tmp/copia.jpg
+./venv/bin/python -c "
+import sqlite3
+base = sqlite3.connect('storage/jobs.db')
+base.execute(\"UPDATE jobs SET status = 'DONE'\")
+base.commit()
+"
+cp /tmp/foto.jpg /tmp/otro_nombre.jpg
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/copia.jpg --op clean
+    --action submit --file /tmp/otro_nombre.jpg --op anonymize --mode blur
 ```
 
-En el registro, la línea `revisado:` termina con el **mismo hash** que la de `foto.jpg`.
-Cuando exista la base de datos, ese es el dato con el que se buscará el envío anterior.
+```
+╭────────────── Imagen ya procesada ──────────────╮
+│   Trabajo  856bd1e4-bed1-4765-a591-b54c7a71944d │
+│    Estado  ✓ DONE                               │
+╰─────────────────────────────────────────────────╯
+Esta imagen ya había sido procesada con esta misma operación.
+```
+
+Devolvió el identificador del trabajo **anterior**, y `find storage/uploads` muestra una
+sola copia: la segunda se borró.
+
+La identidad de un trabajo son cuatro campos, no solo el hash. Cambiando `--mode pixelate`
+el mismo archivo vuelve a ser un trabajo nuevo, porque el resultado sería otro.
+
+### «¿Se pierde todo si se reinicia el servidor?»
+
+No: los trabajos van a SQLite en el momento en que se aceptan.
+
+```bash
+# apagar el servidor con Ctrl-C, volver a arrancarlo, y consultar un trabajo de antes
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action status --job-id EL-ID-DE-ANTES
+```
+
+El servidor mantiene un índice en memoria de los trabajos de esta sesión y cae a la base
+cuando el trabajo es más viejo. La regla de propiedad se aplica igual: pedirlo con otro
+usuario sigue dando `FORBIDDEN`.
+
+Quien escribe la base es **únicamente el proceso de ingreso**; el principal la abre en modo
+solo lectura y SQLite le rechaza cualquier escritura. Es lo que hace viable usar SQLite
+acá, que admite muchos lectores y un solo escritor.
 
 ### «¿Y si mando algo que no es una imagen?»
 
@@ -397,7 +434,6 @@ Un envío nuevo se atiende normalmente.
 
 - **Los trabajos se quedan en `QUEUED`.** Falta la cola de tareas (Celery + Redis) y los
   workers, que son los que abren la imagen y la transforman.
-- **No se detectan duplicados.** El hash ya se calcula; falta la base de datos donde
-  buscarlo.
-- **El historial se pierde al reiniciar**, porque vive en memoria. SQLite es lo que lo hace
-  permanente.
+- **El historial todavía se arma solo con la memoria** de la sesión actual. Los trabajos
+  están en la base, pero su estado ahí se queda en `QUEUED` hasta que existan los eventos
+  del ciclo de vida, que dependen de los workers.

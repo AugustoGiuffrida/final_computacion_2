@@ -17,7 +17,9 @@ import logging
 import multiprocessing
 import time
 from collections.abc import Callable
+from pathlib import Path
 
+from app.common import config
 from app.server import ipc
 from app.server.intake import process
 
@@ -53,6 +55,7 @@ class IntakeChannel:
     def __init__(
         self,
         child_entry_point: Callable[..., None] = process.run_intake,
+        database_path: Path = config.STORAGE_DIR / config.DATABASE_NAME,
         log_level: int = logging.INFO,
     ) -> None:
         """Prepara el canal, sin abrirlo todavía.
@@ -60,9 +63,11 @@ class IntakeChannel:
         Args:
             child_entry_point: Función que corre en el hijo. Tiene que estar al nivel de
                 un módulo para que `spawn` pueda encontrarla por su nombre.
+            database_path: Dónde está la base que escribe el hijo.
             log_level: Nivel de registro que se le pasa al hijo.
         """
         self.child_entry_point = child_entry_point
+        self.database_path = database_path
         self._log_level = log_level
 
         # Contexto explícito en lugar del método por defecto de la plataforma. Con `fork`
@@ -174,7 +179,7 @@ class IntakeChannel:
 
         self._process = self._context.Process(
             target=self.child_entry_point,
-            args=(theirs, self._log_level),
+            args=(theirs, self._log_level, self.database_path),
             name="ingreso",
             daemon=True,
         )
