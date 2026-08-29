@@ -180,6 +180,14 @@ class JobRegistry:
         """
         self._jobs[job.job_id] = job
 
+    def get(self, job_id: str) -> Job | None:
+        """Busca un trabajo por identificador, solo en memoria y sin regla de propiedad.
+
+        Es para uso interno del servidor —el monitor de la cola—, no para responder
+        pedidos de clientes: esos pasan por `find`, que exige el usuario.
+        """
+        return self._jobs.get(job_id)
+
     def find(self, user: str, job_id: str) -> Job:
         """Busca un trabajo de un usuario.
 

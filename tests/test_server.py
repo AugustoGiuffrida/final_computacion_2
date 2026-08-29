@@ -79,6 +79,38 @@ class FakeIntake:
         """No hace nada: no hay proceso que apagar."""
 
 
+class FakeTaskQueue:
+    """Una cola que acepta todo y no toca Redis. Anota lo que se le encola.
+
+    Vive acá, en la suite, junto a `FakeIntake`: es un doble de prueba, no código de la
+    aplicación. La cola real se prueba en `test_jobs.py` y contra un worker vivo.
+
+    Attributes:
+        enqueued: Un `(job, ruta)` por cada encolado, en orden.
+        available: Si `accepts` dice que sí. Bajarlo simula una operación sin tarea.
+        failure: Si no es None, `enqueue` lo levanta. Simula el broker caído.
+    """
+
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[Any, Path]] = []
+        self.available = True
+        self.failure: Exception | None = None
+
+    def accepts(self, operation: str) -> bool:
+        return self.available
+
+    def start(self, jobs: registry.JobRegistry) -> None:
+        """No hace nada: no hay monitor que arrancar."""
+
+    async def stop(self) -> None:
+        """No hace nada: no hay monitor que frenar."""
+
+    async def enqueue(self, job: registry.Job, stored_path: Path) -> None:
+        if self.failure is not None:
+            raise self.failure
+        self.enqueued.append((job, stored_path))
+
+
 class ServerTestCase(unittest.IsolatedAsyncioTestCase):
     """Base con un directorio temporal y el montaje de servidores y clientes.
 
@@ -131,6 +163,7 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
             host, 0,
             storage_dir=self.working_directory,
             intake=intake if intake is not None else FakeIntake(),
+            task_queue=FakeTaskQueue(),
         )
         await server.start()
 
@@ -752,6 +785,64 @@ class IntakeVerdict(ServerTestCase):
             await client.submit(self.an_image(), "clean", {})
 
         self.assertEqual(await client.history(config.DEFAULT_HISTORY_LIMIT), [])
+
+# ──────────────────────── el encolado en la cola de tareas ────────────────────────
+
+
+class TaskEnqueueing(ServerTestCase):
+    """Qué encola el servidor al aceptar un trabajo."""
+
+    async def test_an_accepted_job_is_enqueued_with_its_file(self) -> None:
+        """El trabajo aceptado se manda a la cola, con la ruta del archivo guardado."""
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        response = await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(len(server.tasks.enqueued), 1)
+        job, stored_path = server.tasks.enqueued[0]
+        self.assertEqual(job.job_id, response["job_id"])
+        self.assertTrue(stored_path.exists())
+
+    async def test_a_rejected_image_is_not_enqueued(self) -> None:
+        """Lo que el ingreso rechaza no llega a la cola."""
+        server = await self.running_server(intake=FakeIntake(verdict=ipc.INVALID))
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError):
+            await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(server.tasks.enqueued, [])
+
+    async def test_an_operation_without_a_task_is_rejected_early(self) -> None:
+        """Una operación sin tarea en los workers se rechaza antes de guardar nada."""
+        server = await self.running_server()
+        server.tasks.available = False
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.submit(self.an_image(), "anonymize", {"mode": "blur"})
+
+        self.assertEqual(raised.exception.code, messages.UNKNOWN_OP)
+        self.assertIn("disponible", raised.exception.message)
+        self.assertEqual(len(server.jobs), 0)
+
+    async def test_a_broker_failure_leaves_the_job_marked_failed(self) -> None:
+        """Si el broker no está, el trabajo queda FAILED y el cliente recibe INTERNAL.
+
+        Peor sería dejarlo QUEUED: un estado que promete avance cuando nadie lo tiene.
+        """
+        server = await self.running_server()
+        server.tasks.failure = ConnectionError("redis no contesta")
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError) as raised:
+            await client.submit(self.an_image(), "clean", {})
+
+        self.assertEqual(raised.exception.code, messages.INTERNAL)
+        the_job = next(iter(server.jobs._jobs.values()))
+        self.assertEqual(the_job.status, messages.FAILED)
+        self.assertIn("no se pudo encolar", the_job.error)
 
 # ──────────────────────── consulta y descarga ────────────────────────
 

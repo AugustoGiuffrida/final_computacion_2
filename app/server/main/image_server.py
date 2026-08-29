@@ -39,9 +39,10 @@ from app.common.messages import (
     NotReady,
     RequestError,
     TooLarge,
+    UnknownOperation,
 )
 from app.server import database, ipc
-from app.server.main import incoming, outgoing, registry
+from app.server.main import incoming, jobs, outgoing, registry
 from app.server.main.intake_channel import IntakeChannel
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class ImageServer:
         port: int = config.DEFAULT_PORT,
         storage_dir: Path = config.STORAGE_DIR,
         intake: IntakeChannel | None = None,
+        task_queue: jobs.TaskQueue | None = None,
     ) -> None:
         """Prepara el servidor sin abrir todavía el socket de escucha.
 
@@ -83,6 +85,7 @@ class ImageServer:
                 directorio real del proyecto, que es lo que hacen las pruebas.
             intake: El canal con el proceso de ingreso. Se puede pasar uno con un hijo
                 falso para que las pruebas no lancen un proceso de verdad en cada una.
+            task_queue: La cola de tareas. Las pruebas pasan una falsa que no toca Redis.
         """
         self.host = host
         self.port = port
@@ -101,6 +104,7 @@ class ImageServer:
         self.intake = (
             intake if intake is not None else IntakeChannel(database_path=database_path)
         )
+        self.tasks = task_queue if task_queue is not None else jobs.TaskQueue()
 
         self._server: asyncio.Server | None = None
 
@@ -140,6 +144,7 @@ class ImageServer:
         # Después de los sockets: si el puerto estaba ocupado, `start_server` ya falló y
         # no quedó ningún proceso hijo dando vueltas que haya que ir a matar.
         self.intake.start()
+        self.tasks.start(self.jobs)
 
     @property
     def listening_port(self) -> int:
@@ -169,6 +174,8 @@ class ImageServer:
 
         self._server.close()
         await self._server.wait_closed()
+
+        await self.tasks.stop()
 
         # Último, porque las conexiones que se están terminando de atender pueden estar
         # esperando un veredicto: el ingreso tiene que seguir vivo hasta que no quede
@@ -402,6 +409,15 @@ class ImageServer:
         try:
             user = incoming.require_user(header)
             operation = incoming.require_operation(header)
+
+            # TRANSITORIO: el catálogo completo se valida arriba, pero dos operaciones
+            # todavía no tienen tarea en los workers (falta OpenCV).
+            if not self.tasks.accepts(operation):
+                available = ", ".join(sorted(jobs.TASK_FOR_OPERATION))
+                raise UnknownOperation(
+                    f"'{operation}' todavía no está disponible; por ahora: {available}"
+                )
+
             parameters = incoming.read_parameters(header, operation)
             filename = incoming.safe_filename(header)
             incoming.require_non_empty_image(payload_size)
@@ -461,6 +477,16 @@ class ImageServer:
 
         job.content_hash = verdict.content_hash
         self.jobs.add(job)
+
+        try:
+            await self.tasks.enqueue(job, stored_path)
+        except Exception as failure:
+            # El broker no está: el trabajo queda registrado como fallido, para que la
+            # consulta posterior explique qué pasó en lugar de mostrarlo QUEUED eterno.
+            job.status = messages.FAILED
+            job.error = f"no se pudo encolar: {failure}"
+            logger.exception("no se pudo encolar %s", job.job_id)
+            raise InternalError("no se pudo encolar el trabajo") from failure
         logger.info(
             "trabajo %s aceptado: '%s' sobre '%s' (%d bytes)",
             job.job_id, operation, filename, payload_size,
