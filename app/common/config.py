@@ -86,6 +86,14 @@ ANONYMIZE_MODES = ("blur", "pixelate", "box")
 # Formatos de salida de convert.
 CONVERT_FORMATS = ("webp", "jpeg", "png")
 
+# ─────────────────────────── cola de tareas ───────────────────────────
+
+# Redis local, en el contenedor redis-final (puerto 6380: el 6379 lo ocupa otro
+# servicio de esta máquina). Broker y backend son bases distintas del mismo Redis:
+# la 0 lleva los mensajes "hay trabajo", la 1 los resultados de cada tarea.
+CELERY_BROKER_URL = "redis://localhost:6380/0"
+CELERY_RESULT_BACKEND = "redis://localhost:6380/1"
+
 # ─────────────────────────── historial ───────────────────────────
 
 # Cuántos trabajos devuelve si el cliente no pide una cantidad.

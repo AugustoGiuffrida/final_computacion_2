@@ -15,3 +15,7 @@ rich==15.0.0
 # Apertura y verificación de imágenes. La usa el proceso de ingreso para comprobar que lo
 # que llegó sea realmente una imagen, y la van a usar los workers para procesarlas.
 Pillow==12.3.0
+
+# La cola de tareas distribuida: el servidor encola, los workers ejecutan. `[redis]`
+# arrastra el cliente de Redis, que es el broker y el result backend.
+celery[redis]==5.6.3
