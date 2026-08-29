@@ -71,6 +71,26 @@ def child_that_dies_on_first_request(connection, log_level: int) -> None:
         raise SystemExit(1)
 
 
+def child_that_sends_garbage(connection, log_level: int) -> None:
+    """Contesta el primer pedido con algo que no es un veredicto, y el resto bien.
+
+    Simula que del otro lado del pipe llegue cualquier cosa: un mensaje corrupto, una
+    versión vieja del hijo, un error de programación de nuestro lado.
+    """
+    primero = True
+    while True:
+        request = connection.recv()
+        if request == ipc.SHUTDOWN:
+            return
+        if primero:
+            primero = False
+            connection.send("esto no es un veredicto")
+        else:
+            connection.send(
+                ipc.ReviewResponse(job_id=request.job_id, verdict=ipc.NEW)
+            )
+
+
 def child_that_answers_backwards(connection, log_level: int) -> None:
     """Junta tres pedidos y los contesta al revés, para forzar el desorden."""
     acumulados = []
@@ -282,6 +302,29 @@ class WhenThingsGoWrong(IntakeTestCase):
         self.assertEqual(verdict.verdict, ipc.NEW)
         self.assertNotEqual(channel._process.pid, first_pid)
         self.assertTrue(channel._process.is_alive())
+
+    async def test_a_garbage_message_does_not_kill_the_receiver(self) -> None:
+        """Un mensaje que no es un veredicto se descarta, y el canal sigue sirviendo.
+
+        Es el peor modo de falla posible: el bucle receptor es lo único que entrega los
+        veredictos, así que si muriera, todas las revisiones siguientes vencerían por
+        timeout. Y en silencio: una tarea que muere con excepción no avisa mientras
+        alguien conserve su referencia, y este canal conserva la suya para poder
+        cancelarla al apagar.
+        """
+        channel = await self.running_channel(child_that_sends_garbage)
+
+        with mock.patch.object(intake_channel, "REVIEW_TIMEOUT_SECONDS", 0.5):
+            with self.assertLogs(level="ERROR"):
+                descartado = await channel.review(self.a_request("job-basura"))
+
+        self.assertEqual(descartado.verdict, ipc.UNAVAILABLE)
+
+        # Y acá está lo que importa: el pedido siguiente se atiende normalmente.
+        siguiente = await channel.review(self.a_request("job-2", "otra.jpg"))
+
+        self.assertEqual(siguiente.verdict, ipc.NEW)
+        self.assertFalse(channel._receiver.done())
 
     async def test_reviewing_after_stopping_does_not_hang(self) -> None:
         """Con el canal cerrado, la revisión falla al instante en vez de colgarse."""

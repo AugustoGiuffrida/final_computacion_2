@@ -210,20 +210,29 @@ class IntakeChannel:
             None.
         """
         while True:
-            # `poll()` sin argumento no espera nada. Con un argumento —`poll(0.01)`—
-            # bloquearía ese tiempo, que es justo lo que no se puede hacer acá.
-            if not self._connection.poll():
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
-                continue
-
             try:
-                response = self._connection.recv()
+                # `poll()` sin argumento no espera nada. Con un argumento —`poll(0.01)`—
+                # bloquearía ese tiempo, que es justo lo que no se puede hacer acá.
+                if not self._connection.poll():
+                    await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                    continue
+
+                self._deliver(self._connection.recv())
+
+            except asyncio.CancelledError:
+                raise  # el apagado pidió terminar: esta no se atrapa
+
             except EOFError:
                 if self._handle_child_gone():
                     return
-                continue
 
-            self._deliver(response)
+            except Exception:
+                # Cualquier otra falla se registra y el bucle sigue. Es lo único que
+                # entrega los veredictos: si muriera, todas las revisiones vencerían por
+                # timeout y no quedaría rastro de la causa, porque una tarea que muere
+                # con excepción no avisa mientras alguien conserve su referencia.
+                logger.exception("falla en el receptor de veredictos; se sigue")
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     def _handle_child_gone(self) -> bool:
         """Reacciona a que el hijo haya cerrado su extremo del pipe.
@@ -260,6 +269,12 @@ class IntakeChannel:
         Returns:
             None.
         """
+        if not isinstance(response, ipc.ReviewResponse):
+            # El hijo mandó algo que no es un veredicto. No debería pasar, pero si pasa
+            # conviene enterarse por una línea de registro y no por el canal muerto.
+            logger.error("el ingreso mandó algo que no es un veredicto: %r", response)
+            return
+
         verdict = self._pending.pop(response.job_id, None)
 
         if verdict is None or verdict.done():

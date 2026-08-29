@@ -46,6 +46,17 @@ Una imagen de prueba:
 Sirve cualquier `.jpg` o `.png` real; esta pesa 300 KB, lo bastante para que la
 transferencia ocurra en varios bloques.
 
+Y conviene empezar con el almacenamiento vacío, para que lo que aparezca durante la
+demostración sea solo lo de hoy:
+
+```bash
+find storage/uploads -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
+```
+
+Borra todo lo que haya adentro salvo el `.gitkeep`, que es el archivo con el que git
+conserva la carpeta vacía en el repositorio. Con `rm -rf storage/uploads/*` alcanzaría,
+pero falla si la carpeta ya está vacía.
+
 ---
 
 ## Paso 1 — Arrancar el servidor
@@ -53,14 +64,14 @@ transferencia ocurra en varios bloques.
 En la **terminal 1**:
 
 ```bash
-./venv/bin/python -m app.server --port 9876 --storage-dir /tmp/demo
+./venv/bin/python -m app.server --port 9876
 ```
 
 | Parámetro | Qué hace |
 |---|---|
-| `--port 9876` | puerto de escucha (por defecto 9000) |
-| `--storage-dir /tmp/demo` | dónde guardar las imágenes, en vez del `storage/` del repositorio |
+| `--port 9876` | puerto de escucha (por defecto 9000; se usa otro para no chocar con nada) |
 | `--host` | *se omite a propósito*: sin él escucha en **todas** las interfaces, IPv4 e IPv6 |
+| `--storage-dir` | *también se omite*: las imágenes van a `storage/` dentro del repositorio, que es lo cómodo para mostrarlas |
 
 **Lo que aparece:**
 
@@ -88,7 +99,7 @@ Python  59613 augusto  7u  IPv6  …  TCP *:9876 (LISTEN)
 Python  59613 augusto  8u  IPv4  …  TCP *:9876 (LISTEN)
 
   PID  PPID ARGS
-59613 59610 -m app.server --port 9876 --storage-dir /tmp/demo
+59613 59610 -m app.server --port 9876
 59615 59613 -c from multiprocessing.resource_tracker import main;main(11)
 59616 59613 -c from multiprocessing.spawn import spawn_main; spawn_main(…)
 ```
@@ -156,11 +167,11 @@ Línea por línea:
 **Dónde quedó la imagen:**
 
 ```bash
-find /tmp/demo -type f
+find storage/uploads -type f ! -name .gitkeep
 ```
 
 ```
-/tmp/demo/uploads/7cbb592e-45c0-4841-a6bc-029c535550b4/foto.jpg
+storage/uploads/7cbb592e-45c0-4841-a6bc-029c535550b4/foto.jpg
 ```
 
 Un directorio por trabajo, nombrado con su identificador. El nombre original se conserva
@@ -307,6 +318,16 @@ asyncio.run(main())
 FIN
 ```
 
+**Qué aparece:**
+
+```
+tipo inexistente → tipo de pedido desconocido: 'borrar_todo'
+y sigue viva     → 1 trabajos
+```
+
+El número depende de cuántos envíos lleve `ana` hasta ese momento; lo que importa es que
+haya respuesta, o sea que la conexión siguió sirviendo después de dos rechazos.
+
 Un pedido rechazado es una respuesta más, no una caída. La única excepción es un payload
 demasiado grande: ahí sí se corta, porque quedarían bytes sin leer en el socket y el
 mensaje siguiente se leería corrido.
@@ -314,8 +335,12 @@ mensaje siguiente se leería corrido.
 ### «¿Y si el proceso de ingreso se muere?»
 
 ```bash
+SERVIDOR=$(pgrep -f "app.server --port 9876")
 kill -9 $(pgrep -P $SERVIDOR -f spawn_main)
 ```
+
+La primera línea vuelve a buscar el PID del servidor, para que este bloque funcione suelto
+aunque no se haya corrido el del paso 1.
 
 `kill -9` manda **SIGKILL**, la única señal que un proceso no puede atrapar. Simula una
 muerte violenta, como la que provocaría una imagen preparada para tumbar a la biblioteca
