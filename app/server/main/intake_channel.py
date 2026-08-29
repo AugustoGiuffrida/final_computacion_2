@@ -85,11 +85,7 @@ class IntakeChannel:
         self._pending: dict[str, asyncio.Future[ipc.ReviewResponse]] = {}
 
     def start(self) -> None:
-        """Lanza el proceso de ingreso y la corrutina que recibe sus respuestas.
-
-        Returns:
-            None.
-        """
+        """Lanza el proceso de ingreso y la corrutina que recibe sus respuestas."""
         self._open_channel()
         self._receiver = asyncio.create_task(self._receive_loop())
 
@@ -136,9 +132,6 @@ class IntakeChannel:
         Le pide al hijo que termine por las suyas y solo lo mata si no lo hace dentro de
         SHUTDOWN_TIMEOUT_SECONDS. La diferencia importa: terminando por las suyas alcanza
         a contestar las revisiones que tenía a medio hacer, y nadie queda esperando.
-
-        Returns:
-            None.
         """
         if self._process is None:
             return
@@ -176,11 +169,7 @@ class IntakeChannel:
         logger.info("proceso de ingreso terminado")
 
     def _open_channel(self) -> None:
-        """Crea el pipe y lanza el proceso hijo con su extremo.
-
-        Returns:
-            None.
-        """
+        """Crea el pipe y lanza el proceso hijo con su extremo."""
         ours, theirs = self._context.Pipe()
 
         self._process = self._context.Process(
@@ -205,9 +194,6 @@ class IntakeChannel:
         Es una corrutina y no un hilo porque nunca se bloquea: `poll()` contesta al
         instante si hay algo, y cuando no hay, el `await` le devuelve el control al event
         loop para que atienda a los clientes.
-
-        Returns:
-            None.
         """
         while True:
             try:
@@ -265,9 +251,6 @@ class IntakeChannel:
 
         Args:
             response: El veredicto recién sacado del pipe.
-
-        Returns:
-            None.
         """
         if not isinstance(response, ipc.ReviewResponse):
             # El hijo mandó algo que no es un veredicto. No debería pasar, pero si pasa
@@ -293,9 +276,6 @@ class IntakeChannel:
 
         Args:
             timeout: Cuántos segundos esperar como mucho.
-
-        Returns:
-            None.
         """
         limit = time.monotonic() + timeout
 
@@ -307,9 +287,6 @@ class IntakeChannel:
 
         Args:
             reason: Qué pasó, para que quien esperaba pueda informarlo.
-
-        Returns:
-            None.
         """
         for job_id, verdict in self._pending.items():
             if not verdict.done():

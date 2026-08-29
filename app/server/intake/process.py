@@ -10,9 +10,8 @@ nativo; ante una imagen preparada para eso, la falla no llega como una excepció
 sino como la muerte del intérprete. Siendo un proceso aparte, muere este y el principal
 sigue atendiendo a todos sus clientes.
 
-ESTADO: primera etapa. Calcula el hash del contenido y responde `new`. La verificación con
-Pillow —que es la que produce el veredicto `invalid`— y la búsqueda de duplicados en
-SQLite —que produce `duplicate`— se agregan después.
+ESTADO: verifica la imagen y calcula su hash. Falta la búsqueda de duplicados en SQLite,
+que es la que produce el veredicto `duplicate`.
 """
 
 from __future__ import annotations
@@ -23,6 +22,9 @@ import signal
 from multiprocessing.connection import Connection
 from pathlib import Path
 
+from PIL import Image
+
+from app.common import config
 from app.server import ipc
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,14 @@ logger = logging.getLogger(__name__)
 # Cuánto se lee por vez al calcular el hash. Se lee de a bloques y no todo junto para que
 # la memoria que usa el proceso no dependa del tamaño del archivo que le toque.
 HASH_BLOCK_SIZE = 64 * 1024
+
+
+class InvalidImageError(Exception):
+    """El archivo no es una imagen que este sistema pueda procesar.
+
+    Lleva al veredicto INVALID. Se distingue de cualquier otra falla porque la culpa es
+    del pedido y no del servidor, que es UNAVAILABLE.
+    """
 
 
 def run_intake(connection: Connection, log_level: int) -> None:
@@ -46,9 +56,6 @@ def run_intake(connection: Connection, log_level: int) -> None:
         log_level: Nivel de registro, que se recibe en lugar de heredarse por la misma
             razón: con *spawn* el hijo arranca con el logging sin configurar, y sus
             mensajes se perderían sin que nadie se entere.
-
-    Returns:
-        None.
     """
     logging.basicConfig(
         level=log_level, format="%(asctime)s [ingreso] %(levelname)s %(message)s"
@@ -81,21 +88,24 @@ def run_intake(connection: Connection, log_level: int) -> None:
 def review(request: ipc.ReviewRequest) -> ipc.ReviewResponse:
     """Resuelve un pedido de revisión y arma la respuesta.
 
-    Atrapa cualquier excepción a propósito, y no un tipo de error en particular. Es el
-    borde de un proceso cuyo trabajo es sobrevivir a entradas hostiles: si una excepción
-    escapara, moriría el proceso y quien esperaba esta respuesta se quedaría esperando
-    hasta que venza su timeout. Lo único que este resguardo no puede cubrir es lo que
-    Python no puede atrapar —una falla dentro de código nativo— y para eso está el hecho
-    de ser un proceso aparte.
-
-    Args:
-        request: El pedido a resolver.
+    Distingue dos clases de problema: que el archivo del cliente no sirva (INVALID) y que
+    la revisión haya fallado (UNAVAILABLE). El `except Exception` es deliberado: si una
+    excepción escapara moriría el proceso, y quien espera el veredicto se comería su
+    plazo entero.
 
     Returns:
         El veredicto, siempre con el mismo `job_id` del pedido.
     """
     try:
+        image_format = verify_image(request.stored_path)
         content_hash = hash_of(request.stored_path)
+
+    except InvalidImageError as rejection:
+        logger.info("%s rechazado: %s", request.job_id, rejection)
+        return ipc.ReviewResponse(
+            job_id=request.job_id, verdict=ipc.INVALID, detail=str(rejection)
+        )
+
     except Exception as failure:
         logger.exception("no se pudo revisar %s", request.job_id)
         return ipc.ReviewResponse(
@@ -104,13 +114,55 @@ def review(request: ipc.ReviewRequest) -> ipc.ReviewResponse:
             detail=f"la revisión falló: {failure}",
         )
 
-    logger.info("%s revisado: %s", request.job_id, content_hash[:12])
+    logger.info("%s revisado: %s, %s", request.job_id, image_format, content_hash[:12])
 
     return ipc.ReviewResponse(
-        job_id=request.job_id,
-        verdict=ipc.NEW,
-        content_hash=content_hash,
+        job_id=request.job_id, verdict=ipc.NEW, content_hash=content_hash
     )
+
+
+def verify_image(path: Path) -> str:
+    """Verifica que el archivo sea una imagen íntegra de un formato soportado.
+
+    Abre el archivo dos veces a propósito: `verify()` revisa la estructura y lo deja
+    cerrado, `load()` decodifica los píxeles. A un JPEG al que le faltan cinco bytes del
+    final, el primero lo da por bueno y el segundo lo rechaza.
+
+    Returns:
+        El formato que reconoció Pillow: 'JPEG' o 'PNG'.
+
+    Raises:
+        InvalidImageError: Si no se puede abrir, está corrupta, tiene dimensiones
+            desproporcionadas o su formato no está soportado.
+    """
+    try:
+        with Image.open(path) as image:
+            image_format = image.format
+            image.verify()
+
+        with Image.open(path) as image:
+            image.load()
+
+    except Image.DecompressionBombError as bomb:
+        # Un archivo chico que se descomprime a una imagen gigantesca: es un ataque
+        # conocido, no un error de formato. Se nombra aparte porque no hereda de OSError.
+        raise InvalidImageError(f"dimensiones desproporcionadas: {bomb}") from bomb
+
+    except FileNotFoundError:
+        # Que el archivo no esté es problema nuestro, no del cliente: propaga y termina
+        # en UNAVAILABLE. Va antes del OSError porque hereda de él.
+        raise
+
+    except (OSError, ValueError, SyntaxError) as failure:
+        raise InvalidImageError(f"no se pudo abrir como imagen: {failure}") from failure
+
+    if image_format not in config.SUPPORTED_IMAGE_FORMATS:
+        supported = ", ".join(sorted(config.SUPPORTED_IMAGE_FORMATS))
+        raise InvalidImageError(
+            f"el contenido es {image_format} y solo se aceptan: {supported}"
+        )
+
+    return image_format
 
 
 def hash_of(path: Path) -> str:

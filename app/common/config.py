@@ -44,6 +44,11 @@ RESULTS_DIR = STORAGE_DIR / "results"
 # servidor. Que el archivo sea realmente una imagen lo verifica el servidor.
 SUPPORTED_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
 
+# Lo que el contenido tiene que ser, según Pillow al abrirlo. Distinto de
+# SUPPORTED_EXTENSIONS, que mira el nombre: un archivo puede llamarse 'foto.jpg' y ser un
+# PNG, un GIF o un ejecutable.
+SUPPORTED_IMAGE_FORMATS = frozenset({"JPEG", "PNG"})
+
 # Regla de la aplicación. Se mantiene por debajo de protocol.MAX_PAYLOAD_SIZE, que es el
 # techo defensivo del framing.
 DEFAULT_MAX_IMAGE_SIZE = 25 * 1024 * 1024

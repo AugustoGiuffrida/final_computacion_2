@@ -30,9 +30,6 @@ async def respond_error(
         code: Uno de los códigos de `messages`.
         detail: Explicación para el usuario. Si se omite, el cliente usa la explicación
             estándar del código.
-
-    Returns:
-        None.
     """
     await protocol.send_message(writer, {
         messages.TYPE_FIELD: messages.ERROR,
@@ -53,9 +50,6 @@ async def try_to_report(
         writer: Stream de escritura de la conexión.
         code: Uno de los códigos de `messages`.
         detail: Explicación para el usuario.
-
-    Returns:
-        None.
     """
     try:
         await respond_error(writer, code, detail)

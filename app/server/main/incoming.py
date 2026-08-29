@@ -200,9 +200,6 @@ def require_non_empty_image(payload_size: int) -> None:
     Args:
         payload_size: Bytes declarados en el header.
 
-    Returns:
-        None.
-
     Raises:
         BadRequest: Si el envío viene sin contenido.
     """
@@ -226,9 +223,6 @@ async def save_upload(
         payload_size: Cuántos bytes leer, según lo declarado en el header.
         destination: Dónde escribir. Su directorio se crea si no existe.
 
-    Returns:
-        None.
-
     Raises:
         asyncio.IncompleteReadError: Si la conexión se corta antes de completar los bytes
             anunciados. El archivo parcial queda en disco: limpiarlo le toca a quien
@@ -251,9 +245,6 @@ async def discard_payload(reader: asyncio.StreamReader, payload_size: int) -> No
     Args:
         reader: Stream de lectura de la conexión.
         payload_size: Cuántos bytes descartar. Si es cero, no hace nada.
-
-    Returns:
-        None.
     """
     if payload_size == 0:
         return

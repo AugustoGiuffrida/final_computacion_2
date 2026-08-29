@@ -157,9 +157,6 @@ class ImageServer:
 
         Cierra primero el socket de escucha, para que no entren clientes nuevos mientras
         se termina de atender a los que ya estaban.
-
-        Returns:
-            None.
         """
         if self._server is None:
             return
@@ -291,9 +288,6 @@ class ImageServer:
             reader: Stream de lectura, para consumir el payload.
             writer: Stream de escritura, para responder.
 
-        Returns:
-            None.
-
         Raises:
             TooLarge: Si el payload anunciado supera el máximo aceptado.
             BadRequest: Si el tipo de pedido no está en el catálogo.
@@ -345,9 +339,6 @@ class ImageServer:
             reader: Stream de lectura, para consumir el payload.
             writer: Stream de escritura, para responder.
 
-        Returns:
-            None.
-
         Raises:
             BadRequest: Si falta el usuario o el límite no es un entero positivo.
         """
@@ -393,9 +384,6 @@ class ImageServer:
             payload_size: Bytes de la imagen que siguen al header.
             reader: Stream de lectura, para recibir la imagen.
             writer: Stream de escritura, para responder.
-
-        Returns:
-            None.
 
         Raises:
             RequestError: Si el pedido es inválido en cualquiera de sus campos; la
@@ -487,9 +475,6 @@ class ImageServer:
             reader: Stream de lectura, para consumir el payload.
             writer: Stream de escritura, para responder.
 
-        Returns:
-            None.
-
         Raises:
             BadRequest: Si falta algún campo obligatorio.
             JobNotFound: Si no existe un trabajo con ese identificador.
@@ -542,9 +527,6 @@ class ImageServer:
             payload_size: Bytes de payload declarados. `download` no lleva ninguno.
             reader: Stream de lectura, para consumir el payload.
             writer: Stream de escritura, para responder y enviar el archivo.
-
-        Returns:
-            None.
 
         Raises:
             JobNotFound: Si no existe un trabajo con ese identificador.
@@ -602,9 +584,6 @@ async def close_quietly(writer: asyncio.StreamWriter) -> None:
 
     Args:
         writer: Stream de escritura de la conexión.
-
-    Returns:
-        None.
     """
     writer.close()
     try:

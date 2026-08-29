@@ -142,9 +142,6 @@ class JobRegistry:
 
         Args:
             job: El trabajo a guardar. Su `job_id` pasa a ser la clave.
-
-        Returns:
-            None.
         """
         self._jobs[job.job_id] = job
 

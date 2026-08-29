@@ -21,6 +21,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from PIL import Image
+
 from app.server import ipc
 from app.server.intake import process
 from app.server.main import intake_channel
@@ -154,18 +156,36 @@ class IntakeTestCase(unittest.IsolatedAsyncioTestCase):
             await channel.stop()
         self._channels.clear()
 
-    def a_request(self, job_id: str = "job-1", filename: str = "foto.jpg"):
-        """Arma un pedido de revisión sobre un archivo que existe.
+    def an_image(
+        self,
+        name: str = "foto.jpg",
+        image_format: str = "JPEG",
+        color: str | tuple[int, int, int] = "red",
+    ) -> Path:
+        """Crea una imagen de verdad, que es lo que el ingreso exige desde el paso 2.
 
         Args:
-            job_id: Identificador del trabajo.
-            filename: Nombre del archivo a crear en el directorio temporal.
+            name: Nombre del archivo.
+            image_format: Formato con el que guardarla: 'JPEG', 'PNG', 'GIF'…
+            color: Sirve para que dos imágenes tengan contenido distinto.
+
+        Returns:
+            La ruta de la imagen creada.
+        """
+        path = self.working_directory / name
+        Image.new("RGB", (60, 40), color).save(path, image_format)
+
+        return path
+
+    def a_request(self, job_id: str = "job-1", filename: str = "foto.jpg"):
+        """Arma un pedido de revisión sobre una imagen que existe.
 
         Returns:
             El pedido listo para enviar.
         """
-        stored_path = self.working_directory / filename
-        stored_path.write_bytes(b"\xff\xd8\xff\xe0" + filename.encode() * 100)
+        # El color se deriva del nombre para que cada imagen tenga un hash distinto.
+        tint = sum(filename.encode()) % 200
+        stored_path = self.an_image(filename, color=(tint, 90, 160))
 
         return ipc.ReviewRequest(
             job_id=job_id,
@@ -372,6 +392,84 @@ class Shutdown(IntakeTestCase):
         self.assertEqual(threading.active_count(), before)
 
 
+# ──────────────────────── la verificación de la imagen ────────────────────────
+
+
+class ImageVerification(IntakeTestCase):
+    """Qué acepta y qué rechaza `verify_image`."""
+
+    def test_a_real_image_is_accepted(self) -> None:
+        """Un JPEG íntegro pasa y devuelve su formato."""
+        self.assertEqual(process.verify_image(self.an_image()), "JPEG")
+
+    def test_the_content_decides_and_not_the_name(self) -> None:
+        """Un PNG guardado como 'foto.jpg' se acepta: PNG está soportado.
+
+        La extensión es lo único que puede verificar el cliente, y miente con facilidad.
+        Acá se mira lo que el archivo es.
+        """
+        disguised = self.an_image("foto.jpg", image_format="PNG")
+
+        self.assertEqual(process.verify_image(disguised), "PNG")
+
+    def test_a_valid_image_of_an_unsupported_format_is_rejected(self) -> None:
+        """Un GIF es una imagen válida, pero el sistema no lo procesa."""
+        animated = self.an_image("foto.jpg", image_format="GIF")
+
+        with self.assertRaises(process.InvalidImageError) as raised:
+            process.verify_image(animated)
+
+        self.assertIn("GIF", str(raised.exception))
+
+    def test_garbage_with_an_image_header_is_rejected(self) -> None:
+        """Los primeros bytes de un JPEG no alcanzan para que lo sea."""
+        fake = self.working_directory / "foto.jpg"
+        fake.write_bytes(b"\xff\xd8\xff\xe0" + b"x" * 5000)
+
+        with self.assertRaises(process.InvalidImageError):
+            process.verify_image(fake)
+
+    def test_an_image_truncated_by_a_few_bytes_is_rejected(self) -> None:
+        """Es la prueba que justifica abrir el archivo dos veces.
+
+        A este JPEG le faltan cinco bytes del final: `verify()` lo da por bueno y solo
+        `load()`, que decodifica los píxeles, lo descubre. Con una sola apertura, un
+        archivo así llegaría a los workers y reventaría allá.
+        """
+        complete = self.an_image().read_bytes()
+        truncated = self.working_directory / "cortada.jpg"
+        truncated.write_bytes(complete[:-5])
+
+        with self.assertRaises(process.InvalidImageError):
+            process.verify_image(truncated)
+
+    def test_a_rejected_image_produces_the_invalid_verdict(self) -> None:
+        """El rechazo llega al veredicto que el servidor traduce a INVALID_IMAGE."""
+        fake = self.working_directory / "foto.jpg"
+        fake.write_bytes(b"no soy una imagen")
+
+        response = process.review(
+            ipc.ReviewRequest("job-1", "augusto", "clean", {}, fake)
+        )
+
+        self.assertEqual(response.verdict, ipc.INVALID)
+
+    def test_a_missing_file_is_our_problem_and_not_the_image_s(self) -> None:
+        """Que el archivo no esté es UNAVAILABLE, no INVALID.
+
+        `FileNotFoundError` hereda de `OSError`, así que sin un tratamiento propio caería
+        en el mismo lugar que un archivo corrupto y le echaría al cliente la culpa de un
+        problema del servidor.
+        """
+        with self.assertLogs(level="ERROR"):
+            response = process.review(
+                ipc.ReviewRequest(
+                    "job-1", "augusto", "clean", {}, self.working_directory / "nada.jpg"
+                )
+            )
+
+        self.assertEqual(response.verdict, ipc.UNAVAILABLE)
+
 # ──────────────────────── lo que hace el hijo de verdad ────────────────────────
 
 
@@ -380,8 +478,9 @@ class RealChildWork(IntakeTestCase):
 
     def test_the_hash_matches_the_content(self) -> None:
         """El hash que calcula es el SHA-256 del archivo, leído de a bloques."""
-        content = b"\xff\xd8" + bytes(range(256)) * 800  # más de dos bloques
-        image = self.working_directory / "grande.jpg"
+        # Bytes crudos y no una imagen: `hash_of` no interpreta el contenido, solo lo lee.
+        content = bytes(range(256)) * 800  # más de dos bloques
+        image = self.working_directory / "grande.bin"
         image.write_bytes(content)
 
         self.assertEqual(process.hash_of(image), hashlib.sha256(content).hexdigest())
@@ -392,9 +491,9 @@ class RealChildWork(IntakeTestCase):
         Es el cimiento de la deduplicación: lo que identifica a una imagen es su
         contenido, no cómo la haya llamado el cliente.
         """
-        content = b"\xff\xd8" + b"mismo contenido" * 500
-        first = self.working_directory / "foto.jpg"
-        second = self.working_directory / "copia.jpg"
+        content = b"mismo contenido" * 500
+        first = self.working_directory / "uno.bin"
+        second = self.working_directory / "otro.bin"
         first.write_bytes(content)
         second.write_bytes(content)
 
@@ -419,8 +518,7 @@ class RealChildWork(IntakeTestCase):
 
     def test_a_readable_image_is_accepted_with_its_hash(self) -> None:
         """Una imagen legible se acepta y vuelve con su hash calculado."""
-        image = self.working_directory / "foto.jpg"
-        image.write_bytes(b"\xff\xd8\xff\xe0" + b"x" * 5000)
+        image = self.an_image()
 
         response = process.review(
             ipc.ReviewRequest("job-9", "augusto", "clean", {}, image)

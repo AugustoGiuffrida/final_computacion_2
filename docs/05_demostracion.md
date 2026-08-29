@@ -37,14 +37,16 @@ aparte, que puede morirse sin arrastrar a nadie.
 
 ## Preparación
 
-Una imagen de prueba:
+**Si tenés una foto real a mano, copiala a `/tmp/foto.jpg` y usá esa**: es más
+convincente que un archivo generado. Si no, esto arma una:
 
 ```bash
-./venv/bin/python -c "from pathlib import Path; Path('/tmp/foto.jpg').write_bytes(b'\xff\xd8\xff\xe0' + b'x' * 300_000)"
+./venv/bin/python -c "from PIL import Image; Image.effect_noise((900, 700), 60).convert('RGB').save('/tmp/foto.jpg', 'JPEG', quality=90)"
 ```
 
-Sirve cualquier `.jpg` o `.png` real; esta pesa 300 KB, lo bastante para que la
-transferencia ocurra en varios bloques.
+Pesa unos 450 KB, lo bastante para que la transferencia ocurra en varios bloques. Tiene
+que ser una imagen de verdad: desde el paso 2 el proceso de ingreso la abre y verifica, y
+un archivo de relleno con la cabecera de un JPEG ya no pasa.
 
 Y conviene empezar con el almacenamiento vacío, para que lo que aparezca durante la
 demostración sea solo lo de hoy:
@@ -134,7 +136,7 @@ En la **terminal 2**:
 │   Trabajo  7cbb592e-45c0-4841-a6bc-029c535550b4 │
 │    Estado  ◷ QUEUED                             │
 │ Operación  anonymize                            │
-│    Imagen  foto.jpg (293.0 KB)                  │
+│    Imagen  foto.jpg (450.2 KB)                  │
 ╰─────────────────────────────────────────────────╯
 ```
 
@@ -142,8 +144,8 @@ En la **terminal 2**:
 
 ```
 conectado 127.0.0.1:54968 (1 en total)                     ← 1. el servidor acepta
-pedido 'submit' (300004 bytes de payload)                  ← 2. lee el header
-[ingreso] 7cbb592e-… revisado: 49fe9a7f59d7                ← 3. el HIJO revisa
+pedido 'submit' (460993 bytes de payload)                  ← 2. lee el header
+[ingreso] 7cbb592e-… revisado: JPEG, 8f3a1c9e2b04            ← 3. el HIJO revisa
 trabajo 7cbb592e-… aceptado: 'anonymize' sobre 'foto.jpg'  ← 4. el servidor acepta
 desconectado 127.0.0.1:54968                               ← 5. el cliente cierra
 ```
@@ -154,11 +156,13 @@ Línea por línea:
    abiertas al mismo tiempo; con un solo cliente, una.
 2. **Lee el header y sabe cuánto payload viene.** Cada mensaje empieza con su longitud,
    porque TCP entrega un flujo continuo de bytes sin marcas de dónde termina uno y empieza
-   el siguiente. El servidor lee esos 300.004 bytes **de a bloques**, escribiéndolos en
+   el siguiente. El servidor lee esos 460.993 bytes **de a bloques**, escribiéndolos en
    disco a medida que llegan: nunca tiene la imagen entera en memoria.
 3. **El hijo la revisa.** El servidor le manda por el pipe el identificador y **la ruta del
    archivo**, no los bytes: los dos procesos ven el mismo disco, copiar la imagen por un
-   pipe sería trabajo al pedo. El hijo la abre, calcula su SHA-256 y devuelve el veredicto.
+   pipe sería trabajo al pedo. El hijo la abre con Pillow, comprueba que sea una imagen
+   íntegra de un formato soportado, calcula su SHA-256 y devuelve el veredicto. Es el
+   único lugar de todo el sistema donde se abre contenido que mandó un cliente.
 4. **Recién ahora el servidor acepta el trabajo** y le responde al cliente. El orden
    importa: si el hijo la hubiera rechazado, no habría línea de "aceptado", el archivo se
    borraría y el cliente recibiría un error.
@@ -276,6 +280,36 @@ cp /tmp/foto.jpg /tmp/copia.jpg
 En el registro, la línea `revisado:` termina con el **mismo hash** que la de `foto.jpg`.
 Cuando exista la base de datos, ese es el dato con el que se buscará el envío anterior.
 
+### «¿Y si mando algo que no es una imagen?»
+
+El cliente comprueba la extensión, que es lo único que puede ver desde afuera. El que
+mira el contenido es el proceso de ingreso:
+
+```bash
+cp /tmp/foto.jpg /tmp/rota.jpg
+./venv/bin/python -c "
+from pathlib import Path
+datos = Path('/tmp/rota.jpg').read_bytes()
+Path('/tmp/rota.jpg').write_bytes(datos[:-5])   # le saco cinco bytes del final
+"
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file /tmp/rota.jpg --op clean
+```
+
+```
+╭─────────────── El servidor rechazó el pedido (INVALID_IMAGE) ────────────────╮
+│ no se pudo abrir como imagen: image file is truncated (86 bytes not          │
+│ processed)                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+Cinco bytes de menos y el archivo deja de servir. El ingreso lo abre **dos veces**: una
+para revisar la estructura y otra para decodificar los píxeles, porque un truncado así
+pasa la primera y solo falla en la segunda.
+
+En el registro del servidor se ve el rechazo, y `find storage/uploads` confirma que **el
+archivo se borró**: sin un trabajo que lo use, es basura.
+
 ### «¿Un usuario puede ver los trabajos de otro?»
 
 ```bash
@@ -365,7 +399,5 @@ Un envío nuevo se atiende normalmente.
   workers, que son los que abren la imagen y la transforman.
 - **No se detectan duplicados.** El hash ya se calcula; falta la base de datos donde
   buscarlo.
-- **El ingreso todavía no verifica** que el archivo sea una imagen válida: para eso hace
-  falta Pillow.
 - **El historial se pierde al reiniciar**, porque vive en memoria. SQLite es lo que lo hace
   permanente.

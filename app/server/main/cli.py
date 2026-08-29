@@ -117,9 +117,6 @@ def configure_logging(verbose: bool) -> None:
 
     Args:
         verbose: Si es True, incluye los mensajes de depuración.
-
-    Returns:
-        None.
     """
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -140,9 +137,6 @@ def install_shutdown_handlers(stop_requested: asyncio.Event) -> None:
 
     Args:
         stop_requested: Evento que se activa al recibir cualquiera de las dos señales.
-
-    Returns:
-        None.
     """
     # El event loop guarda una cola de tareas listas para avanzar y un registro de qué
     # está esperando cada corrutina suspendida. `add_signal_handler` es método suyo.

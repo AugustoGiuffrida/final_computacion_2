@@ -59,11 +59,11 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
    `image_server.py` (handler y despachador), `incoming.py` (validación de lo que llega),
    `outgoing.py` (armado de lo que sale) y `registry.py` (índice en memoria de trabajos).
 4. `app/server/ipc.py` e `app/server/intake/process.py` — el proceso de ingreso y el
-   vocabulario del pipe. Calcula el SHA-256 de cada imagen que entra; falta la
-   verificación con Pillow y la deduplicación con SQLite.
+   vocabulario del pipe. Verifica cada imagen con Pillow y calcula su SHA-256; falta la
+   deduplicación y la persistencia, que necesitan SQLite.
 5. `app/server/main/intake_channel.py` — el canal con el proceso hijo, ya cableado a
    `handle_submit`: toda imagen pasa por la revisión antes de que el trabajo se acepte.
-6. `tests/` — 119 pruebas sobre `unittest`, con servidores y procesos hijos reales.
+6. `tests/` — 127 pruebas sobre `unittest`, con servidores y procesos hijos reales.
 7. `docs/05_demostracion.md` — recorrido de demostración, comando por comando.
 
 `app/server/` se divide en `main/` (proceso principal) e `intake/` (proceso hijo), con lo
@@ -235,8 +235,15 @@ Criterio concreto:
 - **`Raises:`** — para las excepciones que la función **levanta ella misma**, y para las
   que propaga cuando quien la llama necesita atraparlas (es el caso de la API pública de
   `session.py`). No para todo lo que podría pasar por ahí.
-- **El porqué sí va siempre.** Lo que se recorta es la burocracia, no la explicación de
-  una decisión de diseño. Ese es el contenido que sirve para la defensa oral.
+- **El porqué sí va, pero una vez.** Lo que se recorta es la burocracia, no la
+  explicación de una decisión de diseño. Pero cada razón se escribe **en un solo lugar**:
+  si ya está en el docstring del módulo, no se repite en cada función.
+- **Dos o tres líneas de prosa alcanzan.** Si un docstring necesita cuatro párrafos, lo
+  que sobra no es el docstring: es que esa explicación pertenece a `docs/`.
+
+Esta regla hubo que reforzarla porque se aflojó sola: al medir los módulos del proceso de
+ingreso, entre el 35% y el 46% de sus líneas eran docstring, y había 23 bloques
+`Returns: None.` que esta misma sección ya prohibía. Se sacaron todos.
 
 Los módulos llevan docstring completo: qué problema resuelven y, cuando aplica, el formato
 de datos con el que trabajan (ver el ejemplo del framing en `protocol.py`). Es lo primero

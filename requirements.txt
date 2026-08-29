@@ -11,3 +11,7 @@
 
 # Salida con formato: tablas del historial, barras de progreso, colores.
 rich==15.0.0
+
+# Apertura y verificación de imágenes. La usa el proceso de ingreso para comprobar que lo
+# que llegó sea realmente una imagen, y la van a usar los workers para procesarlas.
+Pillow==12.3.0
