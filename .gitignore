@@ -1,6 +1,8 @@
-# La base y los dos archivos auxiliares que crea el modo WAL.
-storage/*.db
-storage/*.db-*
+# La base y los dos archivos auxiliares que crea el modo WAL. Vive en data/ y no en
+# storage/ porque storage/ es el volumen compartido por red, donde SQLite no debe estar.
+data/*.db
+data/*.db-*
+!data/.gitkeep
 
 storage/uploads/*
 storage/results/*

@@ -60,7 +60,8 @@ class ImageServer:
         host: Dirección en la que escucha. `None` significa todas las interfaces
             disponibles: abre un socket por familia, IPv4 e IPv6, en el mismo puerto.
         port: Puerto en el que escucha.
-        storage_dir: Raíz de los archivos del sistema.
+        storage_dir: Raíz de los archivos de imagen; el volumen compartido.
+        database_path: Dónde vive la base, en disco local.
         uploads_dir: Dónde se guardan las imágenes recibidas, una carpeta por trabajo.
         connected_clients: Cuántas conexiones hay abiertas en este momento.
         jobs: Registro en memoria de los trabajos aceptados.
@@ -72,6 +73,7 @@ class ImageServer:
         host: str | None = config.LISTEN_ON_ALL_INTERFACES,
         port: int = config.DEFAULT_PORT,
         storage_dir: Path = config.STORAGE_DIR,
+        database_path: Path = config.DATABASE_PATH,
         intake: IntakeChannel | None = None,
         task_queue: jobs.TaskQueue | None = None,
     ) -> None:
@@ -80,9 +82,11 @@ class ImageServer:
         Args:
             host: Dirección de escucha, o None para todas las interfaces.
             port: Puerto de escucha.
-            storage_dir: Raíz de los archivos. Las imágenes recibidas van a su
-                subdirectorio `uploads/`. Se puede cambiar para no escribir en el
-                directorio real del proyecto, que es lo que hacen las pruebas.
+            storage_dir: Raíz de los archivos de imagen. Es el volumen compartido: los
+                workers tienen que ver el mismo contenido, así que en el despliegue es un
+                sistema de archivos de red.
+            database_path: Dónde vive la base. Va aparte del volumen compartido, en disco
+                local: SQLite no debe estar sobre un sistema de archivos de red.
             intake: El canal con el proceso de ingreso. Se puede pasar uno con un hijo
                 falso para que las pruebas no lancen un proceso de verdad en cada una.
             task_queue: La cola de tareas. Las pruebas pasan una falsa que no toca Redis.
@@ -92,7 +96,7 @@ class ImageServer:
         self.storage_dir = storage_dir
         self.uploads_dir = storage_dir / "uploads"
         self.connected_clients = 0
-        database_path = storage_dir / config.DATABASE_NAME
+        self.database_path = database_path
 
         # El registro busca primero en memoria y cae a la base cuando el trabajo es de una
         # ejecución anterior. El hijo escribe esa misma base; acá solo se lee.

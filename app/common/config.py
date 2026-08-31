@@ -38,9 +38,17 @@ UPLOADS_DIR = STORAGE_DIR / "uploads"
 # Procesadas, en un subdirectorio por trabajo.
 RESULTS_DIR = STORAGE_DIR / "results"
 
-# La base va debajo del directorio de almacenamiento, así apuntar `--storage-dir` a otro
-# lado —que es lo que hacen las pruebas— se lleva la base con él.
-DATABASE_NAME = "jobs.db"
+# ─────────────────────────── base de datos ───────────────────────────
+
+# La base vive FUERA del volumen compartido, en disco local del servidor. Dos motivos:
+#
+# 1. SQLite desaconseja los sistemas de archivos de red —el bloqueo de archivos no es
+#    confiable sobre NFS, y el modo WAL necesita memoria compartida entre procesos, que
+#    NFS no provee—. El volumen compartido va a ser NFS para que los workers lo vean.
+# 2. No hace falta que lo sea: la escribe el proceso de ingreso y la lee el principal,
+#    que son padre e hijo y viven siempre en la misma máquina.
+DATABASE_DIR = PROJECT_ROOT / "data"
+DATABASE_PATH = DATABASE_DIR / "jobs.db"
 
 # ─────────────────────────── imágenes ───────────────────────────
 

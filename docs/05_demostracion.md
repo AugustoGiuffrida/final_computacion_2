@@ -276,7 +276,7 @@ que haría un worker al acabar:
 ```bash
 ./venv/bin/python -c "
 import sqlite3
-base = sqlite3.connect('storage/jobs.db')
+base = sqlite3.connect('data/jobs.db')
 base.execute(\"UPDATE jobs SET status = 'DONE'\")
 base.commit()
 "

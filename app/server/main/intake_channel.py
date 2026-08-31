@@ -55,7 +55,7 @@ class IntakeChannel:
     def __init__(
         self,
         child_entry_point: Callable[..., None] = process.run_intake,
-        database_path: Path = config.STORAGE_DIR / config.DATABASE_NAME,
+        database_path: Path = config.DATABASE_PATH,
         log_level: int = logging.INFO,
     ) -> None:
         """Prepara el canal, sin abrirlo todavía.

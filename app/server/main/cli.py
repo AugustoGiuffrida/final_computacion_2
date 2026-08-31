@@ -31,11 +31,11 @@ USAGE_EXAMPLES = """Ejemplos:
   %(prog)s --host 127.0.0.1
       solo acepta conexiones de esta misma máquina
 
-  %(prog)s --storage-dir /var/lib/imagenes
-      guarda los archivos en otro lado
+  %(prog)s --storage-dir /mnt/imagenes
+      usa el volumen compartido montado por red, el que también ven los workers
 
-  %(prog)s --storage-dir /var/lib/imagenes
-      guarda los archivos recibidos en otro directorio
+  %(prog)s --database /var/lib/final/jobs.db
+      pone la base en disco local, fuera del volumen compartido
 
   %(prog)s --verbose
       además del registro normal, muestra el detalle de cada mensaje"""
@@ -73,8 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=config.STORAGE_DIR,
         help=(
-            "directorio raíz de los archivos; las imágenes recibidas van a su "
-            f"subdirectorio 'uploads/' (por defecto: {config.STORAGE_DIR})"
+            "directorio raíz de los archivos de imagen; es el volumen compartido, el "
+            f"que también ven los workers (por defecto: {config.STORAGE_DIR})"
+        ),
+    )
+    parser.add_argument(
+        "--database",
+        type=Path,
+        default=config.DATABASE_PATH,
+        metavar="RUTA",
+        help=(
+            "archivo de la base de datos; va en disco local y no en el volumen "
+            f"compartido (por defecto: {config.DATABASE_PATH})"
         ),
     )
     parser.add_argument(
@@ -163,7 +173,9 @@ async def run_server(arguments: argparse.Namespace) -> None:
     stop_requested = asyncio.Event()
     install_shutdown_handlers(stop_requested)
 
-    server = ImageServer(arguments.host, arguments.port, arguments.storage_dir)
+    server = ImageServer(
+        arguments.host, arguments.port, arguments.storage_dir, arguments.database
+    )
     await server.serve_until_stopped(stop_requested)
 
 

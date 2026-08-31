@@ -47,8 +47,8 @@ tabla es el resumen de la arquitectura:
 | **Socket TCP** | cliente ↔ servidor | entre máquinas | pedidos e imágenes |
 | **multiprocessing.Pipe** | servidor ↔ proceso de ingreso | misma máquina, procesos emparentados | pedidos de revisión, sus respuestas y los eventos |
 | **Redis** | servidor ↔ workers | entre máquinas, procesos sin relación | invocaciones y estados |
-| **Volumen compartido** | servidor ↔ workers ↔ ingreso | mismo sistema de archivos | los archivos de imagen |
-| **SQLite** | ingreso → servidor | mismo sistema de archivos | el historial ya persistido |
+| **Volumen compartido (NFS)** | servidor ↔ workers | red: los workers pueden estar en otra máquina | los archivos de imagen |
+| **SQLite** | ingreso → servidor | disco **local**: son padre e hijo, misma máquina | el historial ya persistido |
 
 La lógica del reparto: los sockets son el único mecanismo que cruza la red hacia
 clientes externos; las Queues son lo más simple y directo entre dos procesos
@@ -61,6 +61,24 @@ dos procesos **no se hablan** a través de la base, pero como uno escribe y el o
 la información fluye igual en esa dirección. Es el camino por el que el servidor
 recupera lo que ya no tiene en memoria — el historial, y los trabajos en curso después
 de un reinicio.
+
+El **volumen compartido es un sistema de archivos de red (NFS)** y la **base de datos no
+lo es**, a propósito:
+
+- Los workers tienen que ver las mismas imágenes que el servidor, y pueden estar en otra
+  máquina —es lo que hace que la cola sea realmente distribuida—. Por eso `uploads/` y
+  `results/` se montan por red.
+- SQLite desaconseja los sistemas de archivos de red: el bloqueo de archivos no es
+  confiable sobre NFS, y el modo WAL necesita memoria compartida entre procesos, que NFS
+  no provee. Como la base la escribe el proceso de ingreso y la lee el principal —padre e
+  hijo, siempre en la misma máquina—, nunca necesitó estar en el volumen compartido.
+
+```
+  servidor  ──┐
+              ├── /mnt/imagenes   (NFS)     uploads/ y results/
+  workers   ──┘
+  servidor  ──── /var/lib/final   (local)   jobs.db
+```
 
 ### 3.1 El IPC en detalle: un pipe y una correlación
 

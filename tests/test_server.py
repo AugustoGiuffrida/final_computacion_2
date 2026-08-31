@@ -162,6 +162,7 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
         server = ImageServer(
             host, 0,
             storage_dir=self.working_directory,
+            database_path=self.working_directory / "jobs.db",
             intake=intake if intake is not None else FakeIntake(),
             task_queue=FakeTaskQueue(),
         )
