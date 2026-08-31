@@ -13,25 +13,37 @@ la demostración— y otra para los comandos. Todo se ejecuta desde la raíz del
 Tres piezas, cada una en su proceso:
 
 ```
-   TERMINAL 2                      TERMINAL 1
+   TERMINAL 3                      TERMINAL 1
    ┌──────────┐   socket TCP    ┌──────────────┐      pipe      ┌──────────────┐
    │ CLIENTE  │ ──────────────► │   SERVIDOR   │ ─────────────► │  INGRESO     │
    │          │ ◄────────────── │  (principal) │ ◄───────────── │  (hijo)      │
    └──────────┘                 └──────────────┘                └──────────────┘
-    otra máquina                  atiende a todos                 revisa la imagen
-    en principio                  los clientes a la vez           sin bloquear a nadie
+    otra máquina                        │  ▲                      revisa la imagen
+    en principio                        │  │ Redis                sin bloquear a nadie
+                                        ▼  │
+                                 ┌──────────────┐   TERMINAL 2
+                                 │   WORKER     │   procesa la imagen; puede estar
+                                 │  (Celery)    │   en otra máquina
+                                 └──────────────┘
 ```
 
 | Pieza | Qué hace | Qué **no** hace |
 |---|---|---|
 | **Cliente** | arma el pedido, manda la imagen, muestra la respuesta | nada de lógica del servicio |
-| **Servidor** | atiende N clientes a la vez, valida, guarda el archivo, responde | **nunca abre una imagen** |
-| **Ingreso** | abre el contenido y lo revisa: hoy calcula su SHA-256 | no habla con los clientes |
+| **Servidor** | atiende N clientes a la vez, valida, guarda el archivo, encola y responde | **nunca abre una imagen** |
+| **Ingreso** | verifica que sea una imagen, calcula su SHA-256, busca duplicados | no habla con los clientes |
+| **Worker** | procesa la imagen: cubre caras, borra metadatos, comprime | no conoce el protocolo ni a los clientes |
 
 La regla que explica el reparto: **el que atiende a los clientes nunca toca contenido no
 confiable.** Abrir una imagen que mandó cualquiera puede tumbar el proceso, y si eso pasara
-en el servidor se caerían todas las conexiones abiertas. Por eso se hace en un proceso
-aparte, que puede morirse sin arrastrar a nadie.
+en el servidor se caerían todas las conexiones abiertas. Por eso se hace en procesos
+aparte —el ingreso y los workers—, que pueden morirse sin arrastrar a nadie.
+
+El **ingreso** y el **worker** se diferencian en algo más que la tarea: el ingreso es hijo
+del servidor y le contesta por un pipe, en la misma máquina y en milisegundos. El worker
+está del otro lado de Redis, puede vivir en otro contenedor u otra máquina, y tarda
+segundos. Por eso uno responde una pregunta y el otro deja su resultado en un lugar donde
+alguien lo va a ir a buscar.
 
 ---
 
@@ -61,9 +73,16 @@ pero falla si la carpeta ya está vacía.
 
 ---
 
-## Paso 1 — Arrancar el servidor
+## Paso 1 — Arrancar el servidor y el worker
 
-En la **terminal 1**:
+Hace falta **Redis** corriendo, que es el intermediario entre el servidor y los workers:
+
+```bash
+docker run -d --name redis-final -p 6380:6379 redis:7-alpine
+docker exec redis-final redis-cli ping     # tiene que responder PONG
+```
+
+En la **terminal 1**, el servidor:
 
 ```bash
 ./venv/bin/python -m app.server --port 9876
@@ -75,7 +94,19 @@ En la **terminal 1**:
 | `--host` | *se omite a propósito*: sin él escucha en **todas** las interfaces, IPv4 e IPv6 |
 | `--storage-dir` | *también se omite*: las imágenes van a `storage/` dentro del repositorio, que es lo cómodo para mostrarlas |
 
-**Lo que aparece:**
+En la **terminal 2**, el worker:
+
+```bash
+./venv/bin/celery -A app.worker.celery_app worker --loglevel=info
+```
+
+| Parte | Qué hace |
+|---|---|
+| `-A app.worker.celery_app` | dónde está la instancia de Celery con su configuración |
+| `worker` | este proceso ejecuta tareas (Celery tiene otros modos) |
+| `--loglevel=info` | para ver cada tarea entrando y saliendo |
+
+**Lo que aparece en la terminal 1:**
 
 ```
 escuchando en 0.0.0.0:9876 (AF_INET)
@@ -83,6 +114,24 @@ escuchando en :::9876 (AF_INET6)
 proceso de ingreso lanzado (pid 59616)
 [ingreso] proceso de ingreso en marcha
 ```
+
+**Y en la terminal 2**, el worker lista lo que sabe hacer:
+
+```
+[tasks]
+  . app.worker.tasks.anonymize
+  . app.worker.tasks.clean
+  . app.worker.tasks.compress
+  . app.worker.tasks.convert
+  . app.worker.tasks.inspect
+  . app.worker.tasks.sanitize_cover
+  . app.worker.tasks.sanitize_shrink
+  . app.worker.tasks.sanitize_strip
+celery@… ready.
+```
+
+Las tres `sanitize_*` son las etapas de la cadena, no operaciones que el cliente pueda
+pedir sueltas.
 
 Cuatro líneas y ya están las tres cosas que importan: **dos sockets** —uno por familia de
 direcciones, mismo puerto—, y **el proceso hijo**, que se lanza al arrancar y no cuando
@@ -114,11 +163,12 @@ cuenta para llevar la cuenta de los recursos compartidos.
 
 ## Paso 2 — Enviar la imagen
 
-En la **terminal 2**:
+En la **terminal 3**:
 
 ```bash
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/foto.jpg --op anonymize --mode blur
+    --action submit --file /tmp/retrato.jpg --op sanitize --mode blur --quality 70 \
+    --max-size 900 --wait -o /tmp/saneada.jpg
 ```
 
 | Parámetro | Qué hace |
@@ -126,28 +176,47 @@ En la **terminal 2**:
 | `--user ana` | con qué usuario se declara el trabajo (no hay autenticación) |
 | `--host 127.0.0.1 --port 9876` | a qué servidor conectarse |
 | `--action submit` | enviar una imagen: el único pedido que lleva archivo |
-| `--op anonymize` | qué hacerle |
-| `--mode blur` | parámetro de `anonymize`: cómo cubrir las caras |
+| `--op sanitize` | la operación estrella: cubre caras, borra metadatos y comprime |
+| `--mode blur --quality 70 --max-size 900` | parámetros de las etapas: cómo cubrir, con cuánta calidad recomprimir y a qué lado máximo reducir |
+| `--wait` | esperar a que termine y descargar el resultado, en vez de volver enseguida |
+| `-o /tmp/saneada.jpg` | dónde guardar lo que vuelva |
 
 **Lo que ve el cliente:**
 
 ```
 ╭──────────────── Imagen aceptada ────────────────╮
-│   Trabajo  7cbb592e-45c0-4841-a6bc-029c535550b4 │
+│   Trabajo  cf4739e2-d3aa-4fa7-b930-68d7b88bd3f1 │
 │    Estado  ◷ QUEUED                             │
-│ Operación  anonymize                            │
-│    Imagen  foto.jpg (450.2 KB)                  │
+│ Operación  sanitize                             │
+│    Imagen  retrato.jpg (499.1 KB)               │
 ╰─────────────────────────────────────────────────╯
+
+╭──────── Resultado ─────────╮
+│ Metadata removed  2        │
+│ Caras detectadas  1        │
+│             Mode  blur     │
+│  Tamaño original  499.1 KB │
+│     Tamaño final  70.6 KB  │
+│    Saved percent  86       │
+╰────────────────────────────╯
+
+✓ Resultado guardado en /tmp/saneada.jpg (70.6 KB)
 ```
+
+El informe junta lo que devolvió **cada etapa de la cadena**: los metadatos que borró la
+primera, las caras que cubrió la segunda, y el ahorro que logró la tercera.
 
 **Y en la terminal 1, el recorrido completo:**
 
 ```
-conectado 127.0.0.1:54968 (1 en total)                     ← 1. el servidor acepta
-pedido 'submit' (460993 bytes de payload)                  ← 2. lee el header
-[ingreso] 7cbb592e-… revisado: JPEG, 8f3a1c9e2b04            ← 3. el HIJO revisa
-trabajo 7cbb592e-… aceptado: 'anonymize' sobre 'foto.jpg'  ← 4. el servidor acepta
-desconectado 127.0.0.1:54968                               ← 5. el cliente cierra
+conectado 127.0.0.1:54968 (1 en total)                  ← 1. el servidor acepta
+pedido 'submit' (511102 bytes de payload)               ← 2. lee el header
+[ingreso] cf4739e2-… revisado: JPEG, 8f3a1c9e2b04       ← 3. el HIJO revisa
+trabajo cf4739e2-… encolado (tarea 0698706e-…)          ← 4. va a la cola
+trabajo cf4739e2-… aceptado: 'sanitize' sobre 'retrato.jpg'
+trabajo cf4739e2-… en proceso                           ← 5. un worker lo tomó
+trabajo cf4739e2-… terminado                            ← 6. la cadena completó
+descarga de cf4739e2-…: out.jpg                         ← 7. el cliente lo baja
 ```
 
 Línea por línea:
@@ -156,27 +225,34 @@ Línea por línea:
    abiertas al mismo tiempo; con un solo cliente, una.
 2. **Lee el header y sabe cuánto payload viene.** Cada mensaje empieza con su longitud,
    porque TCP entrega un flujo continuo de bytes sin marcas de dónde termina uno y empieza
-   el siguiente. El servidor lee esos 460.993 bytes **de a bloques**, escribiéndolos en
-   disco a medida que llegan: nunca tiene la imagen entera en memoria.
+   el siguiente. El servidor lee esos bytes **de a bloques**, escribiéndolos en disco a
+   medida que llegan: nunca tiene la imagen entera en memoria.
 3. **El hijo la revisa.** El servidor le manda por el pipe el identificador y **la ruta del
    archivo**, no los bytes: los dos procesos ven el mismo disco, copiar la imagen por un
    pipe sería trabajo al pedo. El hijo la abre con Pillow, comprueba que sea una imagen
-   íntegra de un formato soportado, calcula su SHA-256 y devuelve el veredicto. Es el
-   único lugar de todo el sistema donde se abre contenido que mandó un cliente.
-4. **Recién ahora el servidor acepta el trabajo** y le responde al cliente. El orden
-   importa: si el hijo la hubiera rechazado, no habría línea de "aceptado", el archivo se
-   borraría y el cliente recibiría un error.
-5. El cliente cierra la conexión y termina.
+   íntegra de un formato soportado, calcula su SHA-256, busca duplicados y registra el
+   trabajo en la base. Es el único lugar del servidor donde se abre contenido de un cliente.
+4. **El servidor encola la tarea** en Redis y le responde al cliente. Acá termina su
+   trabajo con esta imagen: no la procesa ni espera a que se procese.
+5. **Un worker la tomó.** El servidor no se enteró porque el worker le avisara —puede
+   estar en otra máquina— sino porque su **monitor** consulta el estado cada medio
+   segundo y lo vio pasar a `STARTED`.
+6. **La cadena completó** sus tres etapas y el monitor trajo el resultado.
+7. El cliente, que estaba esperando por `--wait`, pide la descarga.
 
-**Dónde quedó la imagen:**
+**Dónde quedó cada cosa:**
 
 ```bash
-find storage/uploads -type f ! -name .gitkeep
+find storage -type f ! -name .gitkeep
 ```
 
 ```
-storage/uploads/7cbb592e-45c0-4841-a6bc-029c535550b4/foto.jpg
+storage/uploads/cf4739e2-…/retrato.jpg    ← el original, tal como llegó
+storage/results/cf4739e2-…/out.jpg        ← el resultado
 ```
+
+Los archivos intermedios de la cadena —uno por etapa— vivieron en esa misma carpeta y los
+borró la última etapa al terminar.
 
 Un directorio por trabajo, nombrado con su identificador. El nombre original se conserva
 adentro, pero lo que identifica al archivo es el **UUID**, que el servidor generó y que no
@@ -184,40 +260,37 @@ es adivinable ni enumerable.
 
 ---
 
-## Paso 3 — Consultar el estado
+## Paso 3 — Verificar el resultado
+
+El `--wait` del paso 2 ya descargó el archivo. Vale la pena mirarlo, porque es donde se ve
+que el sistema hizo lo que promete:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action status --job-id 7cbb592e-45c0-4841-a6bc-029c535550b4
+./venv/bin/python -c "
+from PIL import Image
+from pathlib import Path
+for nombre, ruta in [('enviado', '/tmp/retrato.jpg'), ('saneado', '/tmp/saneada.jpg')]:
+    with Image.open(ruta) as imagen:
+        print(f'  {nombre:<9} {len(imagen.getexif())} metadatos   {imagen.size}   {Path(ruta).stat().st_size // 1024} KB')
+"
 ```
 
-Reemplazá el identificador por el que devolvió el paso 2.
-
 ```
-╭───────────────────────────────────────────────╮
-│ Trabajo  7cbb592e-45c0-4841-a6bc-029c535550b4 │
-│  Estado  ◷ QUEUED                             │
-╰───────────────────────────────────────────────╯
+  enviado   2 metadatos   (1600, 1600)   499 KB
+  saneado   0 metadatos   (900, 900)      70 KB
 ```
 
-Sigue en `QUEUED`, y va a seguir así: **no hay nada que procese los trabajos todavía**. Esa
-es la parte que falta —los workers— y conviene decirlo antes de que lo pregunten.
+Y abriendo las dos imágenes se ve la cara cubierta. Esas tres diferencias son las tres
+etapas de la cadena: metadatos borrados, caras difuminadas, tamaño reducido.
 
-Si se pide la descarga, el servidor lo explica en lugar de fallar:
+**El historial también lo refleja:**
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action download --job-id 7cbb592e-45c0-4841-a6bc-029c535550b4
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 --action history
 ```
 
-```
-╭────────── El servidor rechazó el pedido (NOT_READY) ──────────╮
-│ el trabajo todavía está en QUEUED: no hay nada para descargar │
-╰───────────────────────────────────────────────────────────────╯
-```
-
-El camino completo de la descarga está escrito y probado; lo que falta es quien lleve el
-trabajo hasta `DONE`.
+Los trabajos figuran `✓ DONE` con su hora de terminación, no `QUEUED` como antes de que
+existieran los workers.
 
 ---
 
@@ -235,6 +308,11 @@ El apagado no es matar procesos: el servidor deja de aceptar conexiones, espera 
 cierren las abiertas, y le **pide** al hijo que termine mandándole un mensaje por el pipe.
 El hijo sale por las suyas. Solo si no obedeciera en cinco segundos se lo cortaría por la
 fuerza.
+
+El worker se apaga aparte, con `Ctrl-C` en la terminal 2, y a propósito: **no es hijo del
+servidor**. Un trabajo encolado sigue en Redis aunque el servidor no esté, y lo toma el
+próximo worker que arranque. Es la diferencia con un `multiprocessing.Pool`, cuyos
+procesos mueren con quien los creó.
 
 ---
 
@@ -269,9 +347,16 @@ mismo servidor y el mismo puerto: los dos sockets del paso 1.
 
 ### «¿Detecta imágenes repetidas?»
 
-Sí, comparando el contenido y no el nombre. Como la deduplicación solo reutiliza trabajos
-**terminados** y todavía no hay workers que los terminen, hay que marcar uno a mano —es lo
-que haría un worker al acabar:
+Sí, comparando el contenido y no el nombre — con una salvedad honesta: **hoy no dispara
+sola**, y el motivo es interesante.
+
+La búsqueda de duplicados solo reutiliza trabajos en `DONE`, y consulta **la base de
+datos**. Pero el monitor, al detectar que una tarea terminó, actualiza el índice **en
+memoria** y no la base: persistir los cambios de estado es la parte que falta. Así que la
+base sigue viendo todo `QUEUED` y la consulta nunca encuentra nada.
+
+Se puede mostrar marcando el trabajo a mano, que es exactamente lo que hará esa pieza
+cuando exista:
 
 ```bash
 ./venv/bin/python -c "
@@ -280,9 +365,9 @@ base = sqlite3.connect('data/jobs.db')
 base.execute(\"UPDATE jobs SET status = 'DONE'\")
 base.commit()
 "
-cp /tmp/foto.jpg /tmp/otro_nombre.jpg
+cp /tmp/retrato.jpg /tmp/otro_nombre.jpg
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/otro_nombre.jpg --op anonymize --mode blur
+    --action submit --file /tmp/otro_nombre.jpg --op sanitize --mode blur --quality 70
 ```
 
 ```
@@ -432,8 +517,13 @@ Un envío nuevo se atiende normalmente.
 
 ## Lo que todavía no está
 
-- **Los trabajos se quedan en `QUEUED`.** Falta la cola de tareas (Celery + Redis) y los
-  workers, que son los que abren la imagen y la transforman.
-- **El historial todavía se arma solo con la memoria** de la sesión actual. Los trabajos
-  están en la base, pero su estado ahí se queda en `QUEUED` hasta que existan los eventos
-  del ciclo de vida, que dependen de los workers.
+- **Los eventos del ciclo de vida no se persisten**, y arrastra dos cosas: la
+  deduplicación no dispara sola —consulta la base, que sigue viendo todo `QUEUED`— y el
+  historial de sesiones anteriores mostraría estados desactualizados. El monitor ya
+  detecta los cambios; falta que se los cuente al proceso de ingreso para que los escriba.
+- **El historial se arma solo con la memoria** de la sesión actual. Consultar un trabajo
+  viejo por su identificador sí funciona —cae a la base—, pero listarlos todos no.
+- **Un reinicio del servidor pierde de vista los trabajos en vuelo.** El worker termina la
+  tarea igual y el resultado queda en Redis, pero nadie actualiza el índice.
+- **Falta el despliegue en contenedores.** El volumen compartido está pensado para NFS,
+  para que los workers puedan correr en otra máquina.

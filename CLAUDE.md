@@ -64,7 +64,12 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
    los eventos del ciclo de vida, que dependen de los workers.
 5. `app/server/main/intake_channel.py` — el canal con el proceso hijo, ya cableado a
    `handle_submit`: toda imagen pasa por la revisión antes de que el trabajo se acepte.
-6. `tests/` — 144 pruebas sobre `unittest`, con servidores, procesos hijos y bases reales.
+6. `app/worker/` — Celery y las seis operaciones: `celery_app.py`, `tasks.py` y
+   `faces.py` (detección con cascadas Haar de OpenCV 4).
+7. `app/server/main/jobs.py` — el puente con la cola: encolar y el monitor que traduce
+   los estados de Celery a los del protocolo.
+8. `tests/` — 174 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
+   workers reales.
 7. `docs/05_demostracion.md` — recorrido de demostración, comando por comando.
 
 `app/server/` se divide en `main/` (proceso principal) e `intake/` (proceso hijo), con lo
@@ -100,7 +105,8 @@ Operaciones definidas (v1):
 | `compress` | imagen recomprimida | tamaño original y final |
 | `sanitize` | imagen saneada | resumen de las tres etapas |
 
-`sanitize` encadena `anonymize → clean → compress` (con `chain` de Celery).
+`sanitize` encadena `clean → anonymize → compress` (con `chain` de Celery). La limpieza
+va primera porque es la única etapa que puede contar cuántos metadatos había.
 `inspect` es la demo de apertura: mostrar que una foto del celular revela dónde se tomó.
 
 **El proyecto no tiene nombre propio** — decisión explícita del usuario. Referirse a él

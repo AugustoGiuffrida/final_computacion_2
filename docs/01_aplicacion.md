@@ -51,9 +51,15 @@ cientos de bytes y llegan en la respuesta de `status`, sin necesidad de descarga
 Notas de diseño:
 
 - **`sanitize` es la operación estrella**: representa el caso de uso real —dejar una foto
-  lista para publicar— y encadena `anonymize` → `clean` → `compress`. Se implementa con
+  lista para publicar— y encadena `clean` → `anonymize` → `compress`. Se implementa con
   **composición de tareas Celery (`chain`)**, donde cada etapa recibe la salida de la
-  anterior. Es el argumento de composición de tareas en la defensa. No incluye `convert`
+  anterior. Es el argumento de composición de tareas en la defensa.
+
+  El orden importa y se descubrió probándolo: la limpieza de metadatos va **primera**
+  porque es la única etapa que puede contar cuántos había. Cualquier etapa que guarde la
+  imagen antes se los lleva puestos —Pillow escribe metadatos solo si se le pasan— y la
+  limpieza informaría cero. De paso, los archivos intermedios nunca llevan las
+  coordenadas GPS de la foto. No incluye `convert`
   porque `compress` ya reescribe el archivo; convertir de formato es una decisión
   explícita del usuario, no parte del saneamiento.
 - **`inspect` es la demo de apertura**: mostrar que una foto cualquiera del celular

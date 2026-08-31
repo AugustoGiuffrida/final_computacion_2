@@ -321,7 +321,7 @@ y reporta el estado y las rutas al result backend.
 Acá está el **paralelismo real** del sistema: son procesos separados, con intérpretes y
 GILs separados, así que N workers procesan N imágenes simultáneamente en N núcleos.
 
-La operación `sanitize` se implementa como una cadena de tareas (anonymize → clean →
+La operación `sanitize` se implementa como una cadena de tareas (clean → anonymize →
 compress), donde cada etapa recibe la salida de la anterior.
 
 ### 4.5 Monitor de trabajos en curso
@@ -543,8 +543,10 @@ final_comp2/
 │   │   └── intake/          # ── lo que corre en el proceso de ingreso ──
 │   │       └── process.py   # el bucle: verificación, hash, deduplicación     [hecho]
 │   └── worker/
-│       ├── celery_app.py    # instancia y configuración de Celery          [pendiente]
-│       └── tasks.py         # tareas Pillow/OpenCV, una por operación      [pendiente]
+│       ├── celery_app.py    # instancia y configuración de Celery              [hecho]
+│       ├── tasks.py         # una tarea por operación, más las tres etapas
+│       │                    #   de la cadena de saneamiento                      [hecho]
+│       └── faces.py         # detección de caras con cascadas Haar               [hecho]
 ├── tests/                   # pruebas sobre `unittest`, una por módulo
 ├── storage/                 # volumen compartido (uploads/, results/)
 ├── docker-compose.yml                                                      [pendiente]
