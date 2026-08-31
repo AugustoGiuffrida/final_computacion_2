@@ -19,3 +19,8 @@ Pillow==12.3.0
 # La cola de tareas distribuida: el servidor encola, los workers ejecutan. `[redis]`
 # arrastra el cliente de Redis, que es el broker y el result backend.
 celery[redis]==5.6.3
+
+# Detección de caras. Se fija la versión 4: la 5 quitó `CascadeClassifier` y sus cascadas
+# del paquete, y solo deja un detector que exige bajar un modelo aparte. `headless` evita
+# las dependencias de interfaz gráfica, que un worker no necesita.
+opencv-python-headless==4.14.0.94

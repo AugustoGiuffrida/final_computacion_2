@@ -7,8 +7,8 @@ workers ven el mismo volumen que el servidor.
 Todas las tareas comparten la misma firma y la misma forma de resultado, porque el
 monitor del servidor las trata igual sin importar cuál sea.
 
-ESTADO: las cuatro operaciones que alcanzan con Pillow. `anonymize` y `sanitize`
-necesitan detección de caras (OpenCV) y vienen después.
+ESTADO: falta `sanitize`, que encadena `anonymize`, `clean` y `compress` con un `chain`
+de Celery.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Any
 from PIL import Image
 
 from app.common import config
+from app.worker import faces
 from app.worker.celery_app import celery_app
 
 # El tag GPSInfo del estándar EXIF: si está presente, la foto dice dónde se tomó.
@@ -66,6 +67,39 @@ def inspect(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[st
         }
 
     return {"result": report}
+
+
+@celery_app.task
+def anonymize(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    """Cubre las caras que encuentre en la imagen.
+
+    Que no encuentre ninguna no es un error: la imagen se guarda igual y el informe lo
+    dice. Distinguirlo importa —"no había caras" y "no las detecté" se ven iguales desde
+    afuera— y por eso el resultado incluye la cantidad.
+
+    Args:
+        job_id: Identificador del trabajo.
+        input_path: Ruta de la imagen original.
+        parameters: `mode` ('blur', 'pixelate' o 'box'; por defecto 'blur') y `strength`
+            (1-100; por defecto 15).
+
+    Returns:
+        `{"output_path": ..., "result": {"faces_detected": N, "mode": ...}}`.
+    """
+    mode = parameters.get("mode", "blur")
+    strength = parameters.get("strength", config.DEFAULT_ANONYMIZE_STRENGTH)
+
+    detected = faces.detect(Path(input_path))
+
+    with Image.open(input_path) as image:
+        covered = faces.cover(image.convert("RGB"), detected, mode, strength)
+        destination = output_path_for(job_id, Path(input_path).suffix.lower())
+        covered.save(destination)
+
+    return {
+        "output_path": str(destination),
+        "result": {"faces_detected": len(detected), "mode": mode},
+    }
 
 
 @celery_app.task

@@ -36,11 +36,12 @@ logger = logging.getLogger(__name__)
 # Qué tarea ejecuta cada operación del catálogo. Encolar es buscar acá y llamar
 # `.delay()`, que es la forma de la guía de la cátedra.
 TASK_FOR_OPERATION = {
+    "anonymize": tasks.anonymize,
     "inspect": tasks.inspect,
     "clean": tasks.clean,
     "compress": tasks.compress,
     "convert": tasks.convert,
-    # ESTADO: 'anonymize' y 'sanitize' se agregan con la detección de caras (OpenCV).
+    # ESTADO: falta 'sanitize', que encadena las otras tres.
 }
 
 # Cada cuánto mira el monitor los trabajos en vuelo. Más chico, los cambios de estado se

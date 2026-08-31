@@ -91,6 +91,10 @@ ALL_OPERATION_PARAMETERS = tuple(
 # Formas de cubrir una cara.
 ANONYMIZE_MODES = ("blur", "pixelate", "box")
 
+# Intensidad por defecto del difuminado o el pixelado, de 1 a 100. Se aplica relativa al
+# tamaño de cada cara y no en píxeles: 15 tapa igual una foto de celular y una de cámara.
+DEFAULT_ANONYMIZE_STRENGTH = 15
+
 # Formatos de salida de convert.
 CONVERT_FORMATS = ("webp", "jpeg", "png")
 

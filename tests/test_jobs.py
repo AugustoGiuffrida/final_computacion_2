@@ -84,19 +84,16 @@ class MonitorTranslation(unittest.TestCase):
 class OperationAvailability(unittest.TestCase):
     """Qué operaciones tienen tarea, mientras falten las de OpenCV."""
 
-    def test_the_pillow_operations_are_available(self) -> None:
-        """Las cuatro de Pillow están."""
+    def test_the_implemented_operations_are_available(self) -> None:
+        """Las cinco que ya tienen tarea."""
         queue = TaskQueue()
 
-        for operation in ("inspect", "clean", "compress", "convert"):
+        for operation in ("inspect", "clean", "compress", "convert", "anonymize"):
             self.assertTrue(queue.accepts(operation))
 
-    def test_the_face_operations_are_not_yet(self) -> None:
-        """Las que necesitan detección de caras, todavía no."""
-        queue = TaskQueue()
-
-        self.assertFalse(queue.accepts("anonymize"))
-        self.assertFalse(queue.accepts("sanitize"))
+    def test_sanitize_is_not_yet(self) -> None:
+        """`sanitize` encadena las otras y todavía no está."""
+        self.assertFalse(TaskQueue().accepts("sanitize"))
 
 
 class Enqueueing(unittest.IsolatedAsyncioTestCase):
