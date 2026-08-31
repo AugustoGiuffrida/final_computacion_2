@@ -87,17 +87,12 @@ class FakeTaskQueue:
 
     Attributes:
         enqueued: Un `(job, ruta)` por cada encolado, en orden.
-        available: Si `accepts` dice que sí. Bajarlo simula una operación sin tarea.
         failure: Si no es None, `enqueue` lo levanta. Simula el broker caído.
     """
 
     def __init__(self) -> None:
         self.enqueued: list[tuple[Any, Path]] = []
-        self.available = True
         self.failure: Exception | None = None
-
-    def accepts(self, operation: str) -> bool:
-        return self.available
 
     def start(self, jobs: registry.JobRegistry) -> None:
         """No hace nada: no hay monitor que arrancar."""
@@ -814,19 +809,6 @@ class TaskEnqueueing(ServerTestCase):
             await client.submit(self.an_image(), "clean", {})
 
         self.assertEqual(server.tasks.enqueued, [])
-
-    async def test_an_operation_without_a_task_is_rejected_early(self) -> None:
-        """Una operación sin tarea en los workers se rechaza antes de guardar nada."""
-        server = await self.running_server()
-        server.tasks.available = False
-        client = await self.connected_client(server)
-
-        with self.assertRaises(messages.ServerError) as raised:
-            await client.submit(self.an_image(), "anonymize", {"mode": "blur"})
-
-        self.assertEqual(raised.exception.code, messages.UNKNOWN_OP)
-        self.assertIn("disponible", raised.exception.message)
-        self.assertEqual(len(server.jobs), 0)
 
     async def test_a_broker_failure_leaves_the_job_marked_failed(self) -> None:
         """Si el broker no está, el trabajo queda FAILED y el cliente recibe INTERNAL.

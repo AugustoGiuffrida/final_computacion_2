@@ -125,19 +125,13 @@ def shrink_in(
 
 
 def output_path_for(job_id: str, suffix: str) -> Path:
-    """Crea la carpeta del resultado y arma la ruta del archivo de salida.
+    """La ruta del resultado final de un trabajo: `out` más su extensión.
 
     Args:
-        job_id: Identificador del trabajo; nombra su carpeta bajo `results/`.
-        suffix: Extensión del archivo de salida, con el punto: '.jpg', '.webp'…
-
-    Returns:
-        La ruta donde la tarea debe guardar su resultado.
+        job_id: Identificador del trabajo.
+        suffix: Extensión del archivo, con el punto: '.jpg', '.webp'…
     """
-    directory = config.RESULTS_DIR / job_id
-    directory.mkdir(parents=True, exist_ok=True)
-
-    return directory / f"out{suffix}"
+    return stage_path(job_id, f"out{suffix}")
 
 
 @celery_app.task

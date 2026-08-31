@@ -20,6 +20,7 @@ proyecto que no tiene versión asíncrona.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,17 +75,6 @@ class TaskQueue:
         """Cuántos trabajos están bajo vigilancia en este momento."""
         return len(self._handles)
 
-    def accepts(self, operation: str) -> bool:
-        """Si la operación ya tiene una tarea que la ejecute.
-
-        Args:
-            operation: Una operación del catálogo del protocolo.
-
-        Returns:
-            False para las que todavía no están implementadas en los workers.
-        """
-        return operation in TASK_FOR_OPERATION or operation == "sanitize"
-
     def start(self, jobs: registry.JobRegistry) -> None:
         """Arranca el monitor. Se llama una vez, desde dentro del event loop.
 
@@ -95,9 +85,16 @@ class TaskQueue:
         self._monitor = asyncio.create_task(self._watch())
 
     async def stop(self) -> None:
-        """Frena el monitor. Los trabajos ya encolados siguen su curso en los workers."""
+        """Frena el monitor y espera a que termine.
+
+        Los trabajos ya encolados siguen su curso en los workers. El `await` posterior a
+        la cancelación importa: sin él, la tarea puede seguir viva cuando el event loop
+        se cierra, y asyncio lo reporta como una tarea destruida a medio hacer.
+        """
         if self._monitor is not None:
             self._monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._monitor
             self._monitor = None
 
     async def enqueue(self, job: registry.Job, stored_path: Path) -> None:

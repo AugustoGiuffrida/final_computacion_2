@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -117,7 +116,20 @@ class IntakeChannel:
         self._pending[request.job_id] = verdict
 
         # send() escribe en el pipe
-        self._connection.send(request)
+        try:
+            self._connection.send(request)
+        except OSError as failure:
+            # El hijo murió y el receptor todavía no rehízo el canal. Sin esto, el
+            # BrokenPipeError subiría hasta el manejador de la conexión, que lo
+            # confundiría con una caída del CLIENTE y le cortaría la conexión a quien
+            # no tuvo nada que ver.
+            logger.error("no se pudo enviar la revisión de %s: %s", request.job_id, failure)
+            self._pending.pop(request.job_id, None)
+            return ipc.ReviewResponse(
+                job_id=request.job_id,
+                verdict=ipc.UNAVAILABLE,
+                detail="el proceso de ingreso no está disponible",
+            )
 
         try:
             return await asyncio.wait_for(verdict, REVIEW_TIMEOUT_SECONDS)
@@ -275,17 +287,14 @@ class IntakeChannel:
     async def _wait_for_child(self, timeout: float) -> None:
         """Espera a que el proceso hijo termine, sin frenar el event loop.
 
-        `join()` bloquearía; acá se pregunta con `is_alive()`, que contesta al instante, y
-        se cede el control entre pregunta y pregunta. Es el mismo criterio que el bucle de
-        recepción, para que en todo el archivo haya una sola forma de esperar.
+        `join()` es bloqueante, así que va a un hilo del pool con `to_thread`: el mismo
+        recurso que usa el puente con Celery para su cliente bloqueante.
 
         Args:
-            timeout: Cuántos segundos esperar como mucho.
+            timeout: Cuántos segundos esperar como mucho. `join` vuelve igual si vence;
+                quien llama pregunta `is_alive()` para saber qué pasó.
         """
-        limit = time.monotonic() + timeout
-
-        while self._process.is_alive() and time.monotonic() < limit:
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        await asyncio.to_thread(self._process.join, timeout)
 
     def _fail_pending(self, reason: str) -> None:
         """Da por perdidas todas las revisiones en curso.

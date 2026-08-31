@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from app.common import config, messages
+from app.common import messages
 from app.server.main import jobs, registry
 from app.server.main.jobs import TaskQueue
 
@@ -79,27 +79,6 @@ class MonitorTranslation(unittest.TestCase):
         self.queue._apply("fantasma", "SUCCESS", {})
 
         self.assertNotIn("fantasma", self.queue._handles)
-
-
-class OperationAvailability(unittest.TestCase):
-    """Qué operaciones tienen tarea, mientras falten las de OpenCV."""
-
-    def test_every_operation_of_the_catalog_is_available(self) -> None:
-        """Las seis operaciones del protocolo tienen con qué ejecutarse."""
-        queue = TaskQueue()
-
-        for operation in config.OPERATION_PARAMETERS:
-            with self.subTest(operation=operation):
-                self.assertTrue(queue.accepts(operation))
-
-    def test_sanitize_is_accepted_even_though_it_is_not_a_single_task(self) -> None:
-        """`sanitize` no está en el diccionario: es una cadena, y se acepta igual."""
-        self.assertNotIn("sanitize", jobs.TASK_FOR_OPERATION)
-        self.assertTrue(TaskQueue().accepts("sanitize"))
-
-    def test_an_operation_that_does_not_exist_is_rejected(self) -> None:
-        """Cualquier otra cosa, no."""
-        self.assertFalse(TaskQueue().accepts("inventada"))
 
 
 class Enqueueing(unittest.IsolatedAsyncioTestCase):

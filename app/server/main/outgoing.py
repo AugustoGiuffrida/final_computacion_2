@@ -7,11 +7,20 @@ nadie del otro lado— y dos calculan datos que viajan en el header de una desca
 from __future__ import annotations
 
 import asyncio
-import mimetypes
 from pathlib import Path
 
 from app.common import messages, protocol
 from app.server.main import registry
+
+
+# Los tipos MIME de lo que este servidor puede llegar a servir. Son cuatro: no hace falta
+# una biblioteca para esto.
+CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 
 
 # ──────────────────────────── mensajes de error ────────────────────────────
@@ -86,8 +95,6 @@ def content_type_of(file_path: Path) -> str:
         file_path: Ruta del archivo.
 
     Returns:
-        El tipo MIME, o 'application/octet-stream' si no se puede deducir.
+        El tipo MIME, o 'application/octet-stream' si la extensión no es conocida.
     """
-    guessed_type, _encoding = mimetypes.guess_type(file_path.name)
-
-    return guessed_type or "application/octet-stream"
+    return CONTENT_TYPES.get(file_path.suffix.lower(), "application/octet-stream")

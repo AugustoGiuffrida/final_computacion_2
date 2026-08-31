@@ -106,15 +106,24 @@ BD resolvería un problema (escritores concurrentes) que este sistema no tiene.
 
 ---
 
-## 7. Medir duraciones no es saber la hora
+## 7. Lo bloqueante va a un hilo del pool
 
-| Llamada | Qué hace | Dónde |
+Cuando una biblioteca no tiene versión asíncrona, su llamada bloqueante se manda a un
+hilo con `asyncio.to_thread(funcion, args)`: devuelve una corrutina esperable y el event
+loop sigue atendiendo mientras el hilo espera.
+
+| Llamada | Qué espera | Dónde |
 |---|---|---|
-| `time.monotonic()` | contador que solo sube; inmune a cambios de hora | `intake_channel.py` — `_wait_for_child` |
-| `datetime.now(timezone.utc)` | la fecha real, para `created_at` | `registry.py` — `new_job`, `database.py` — `insert` |
+| `to_thread(task.delay, …)` | publicar en Redis | `jobs.py` — `enqueue` |
+| `to_thread(self._poll_backend)` | consultar el estado en Redis | `jobs.py` — `_watch` |
+| `to_thread(self._process.join, t)` | que el proceso hijo termine | `intake_channel.py` — `_wait_for_child` |
 
-`limit = monotonic() + timeout` convierte una duración ("5 segundos") en un instante
-("hasta las 645951.22"), y el bucle compara contra ese número fijo.
+**Si preguntan** por qué acá sí hay hilos y en el resto no: son del pool de asyncio, se
+usan solo para envolver llamadas bloqueantes ajenas (el cliente de Redis, `join`), y no
+comparten estado — no hay candados propios en todo el proyecto.
+
+La fecha real, cuando hace falta (`created_at`), es `datetime.now(timezone.utc)` —
+`registry.py` y `database.py`.
 
 ---
 

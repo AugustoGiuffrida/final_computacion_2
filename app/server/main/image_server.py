@@ -39,7 +39,6 @@ from app.common.messages import (
     NotReady,
     RequestError,
     TooLarge,
-    UnknownOperation,
 )
 from app.server import database, ipc
 from app.server.main import incoming, jobs, outgoing, registry
@@ -413,14 +412,6 @@ class ImageServer:
         try:
             user = incoming.require_user(header)
             operation = incoming.require_operation(header)
-
-            # TRANSITORIO: el catálogo completo se valida arriba, pero dos operaciones
-            # todavía no tienen tarea en los workers (falta OpenCV).
-            if not self.tasks.accepts(operation):
-                available = ", ".join(sorted(jobs.TASK_FOR_OPERATION))
-                raise UnknownOperation(
-                    f"'{operation}' todavía no está disponible; por ahora: {available}"
-                )
 
             parameters = incoming.read_parameters(header, operation)
             filename = incoming.safe_filename(header)

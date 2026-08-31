@@ -23,26 +23,30 @@ from app.common.messages import BadRequest, InvalidImage, UnknownOperation
 
 # ──────────────────────── campos del header ────────────────────────
 
-def require_user(header: dict[str, Any]) -> str:
-    """Lee el usuario declarado en el pedido, verificando que esté presente.
-
-    Los cuatro pedidos del protocolo lo llevan, así que se valida en un solo lugar.
+def require_text_field(header: dict[str, Any], field: str) -> str:
+    """Lee un campo de texto obligatorio del header.
 
     Args:
         header: Header del pedido, ya deserializado.
+        field: Nombre del campo a leer.
 
     Returns:
-        El nombre del usuario, sin espacios sobrantes.
+        El valor, sin espacios sobrantes.
 
     Raises:
         BadRequest: Si falta, está vacío o no es texto.
     """
-    user = header.get("user")
+    value = header.get(field)
 
-    if not isinstance(user, str) or not user.strip():
-        raise BadRequest("falta el campo 'user' o está vacío")
+    if not isinstance(value, str) or not value.strip():
+        raise BadRequest(f"falta el campo '{field}' o está vacío")
 
-    return user.strip()
+    return value.strip()
+
+
+def require_user(header: dict[str, Any]) -> str:
+    """El usuario declarado en el pedido. Los cuatro pedidos del protocolo lo llevan."""
+    return require_text_field(header, "user")
 
 
 def read_limit(header: dict[str, Any]) -> int:
@@ -74,25 +78,8 @@ def read_limit(header: dict[str, Any]) -> int:
 
 
 def require_job_id(header: dict[str, Any]) -> str:
-    """Lee el identificador de trabajo del pedido, verificando que esté presente.
-
-    Lo llevan `status` y `download`, así que se valida en un solo lugar.
-
-    Args:
-        header: Header del pedido, ya deserializado.
-
-    Returns:
-        El identificador, sin espacios sobrantes.
-
-    Raises:
-        BadRequest: Si falta, está vacío o no es texto.
-    """
-    job_id = header.get("job_id")
-
-    if not isinstance(job_id, str) or not job_id.strip():
-        raise BadRequest("falta el campo 'job_id' o está vacío")
-
-    return job_id.strip()
+    """El identificador de trabajo del pedido. Lo llevan `status` y `download`."""
+    return require_text_field(header, "job_id")
 
 
 def require_operation(header: dict[str, Any]) -> str:

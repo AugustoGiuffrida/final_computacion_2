@@ -353,6 +353,20 @@ class WhenThingsGoWrong(IntakeTestCase):
         self.assertEqual(siguiente.verdict, ipc.NEW)
         self.assertFalse(channel._receiver.done())
 
+    async def test_a_broken_pipe_becomes_unavailable_and_not_an_exception(self) -> None:
+        """Si el pipe se rompió justo antes del envío, `review` devuelve su veredicto.
+
+        Sin esto, el BrokenPipeError subiría hasta el manejador de la conexión, que lo
+        confundiría con una caída del CLIENTE y le cortaría la conexión a quien no tuvo
+        nada que ver.
+        """
+        channel = await self.running_channel(child_that_accepts)
+        channel._connection.close()  # el canal quedó roto y nadie lo notó todavía
+
+        verdict = await channel.review(self.a_request())
+
+        self.assertEqual(verdict.verdict, ipc.UNAVAILABLE)
+
     async def test_reviewing_after_stopping_does_not_hang(self) -> None:
         """Con el canal cerrado, la revisión falla al instante en vez de colgarse."""
         channel = await self.running_channel(child_that_accepts)
