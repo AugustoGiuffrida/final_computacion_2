@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from celery import chain
 from celery.result import AsyncResult
 
 from app.common import messages
@@ -41,8 +42,11 @@ TASK_FOR_OPERATION = {
     "clean": tasks.clean,
     "compress": tasks.compress,
     "convert": tasks.convert,
-    # ESTADO: falta 'sanitize', que encadena las otras tres.
 }
+
+# `sanitize` no es una tarea sino tres encadenadas: cada etapa recibe el estado que
+# devolvió la anterior. Va aparte porque se encola distinto que las demás.
+SANITIZE_CHAIN = (tasks.sanitize_strip, tasks.sanitize_cover, tasks.sanitize_shrink)
 
 # Cada cuánto mira el monitor los trabajos en vuelo. Más chico, los cambios de estado se
 # ven antes; más grande, menos consultas a Redis. Medio segundo no se nota en ninguna de
@@ -79,7 +83,7 @@ class TaskQueue:
         Returns:
             False para las que todavía no están implementadas en los workers.
         """
-        return operation in TASK_FOR_OPERATION
+        return operation in TASK_FOR_OPERATION or operation == "sanitize"
 
     def start(self, jobs: registry.JobRegistry) -> None:
         """Arranca el monitor. Se llama una vez, desde dentro del event loop.
@@ -103,12 +107,23 @@ class TaskQueue:
             job: El trabajo recién aceptado, ya registrado en el índice.
             stored_path: Dónde quedó la imagen. Viaja como texto: la cola es JSON.
         """
-        task = TASK_FOR_OPERATION[job.operation]
-
         # `delay` publica el mensaje en Redis y es bloqueante: al hilo del pool.
-        handle = await asyncio.to_thread(
-            task.delay, job.job_id, str(stored_path), job.parameters
-        )
+        if job.operation == "sanitize":
+            state = {
+                "job_id": job.job_id,
+                "path": str(stored_path),
+                # No cambia en toda la cadena: es contra lo que se informa el ahorro.
+                "original_path": str(stored_path),
+                "parameters": job.parameters,
+                "result": {},
+            }
+            pipeline = chain(*(stage.s() for stage in SANITIZE_CHAIN))
+            handle = await asyncio.to_thread(pipeline.delay, state)
+        else:
+            task = TASK_FOR_OPERATION[job.operation]
+            handle = await asyncio.to_thread(
+                task.delay, job.job_id, str(stored_path), job.parameters
+            )
         self._handles[job.job_id] = handle
         logger.info("trabajo %s encolado (tarea %s)", job.job_id, handle.id)
 
@@ -146,6 +161,13 @@ class TaskQueue:
         snapshots = []
         for job_id, handle in self._handles.items():
             state = handle.state
+
+            # Un `chain` devuelve el asidero de la ÚLTIMA tarea, que figura PENDING
+            # mientras corren las anteriores. Sin esto, un saneamiento se vería QUEUED
+            # durante casi todo su procesamiento y saltaría a DONE al final.
+            if state == "PENDING" and has_started(handle):
+                state = "STARTED"
+
             payload = handle.result if state in ("SUCCESS", "FAILURE") else None
             snapshots.append((job_id, state, payload))
 
@@ -183,3 +205,25 @@ class TaskQueue:
             job.error = str(payload)  # la excepción que levantó la tarea
             self._handles.pop(job_id, None)
             logger.warning("trabajo %s falló: %s", job_id, job.error)
+
+
+def has_started(handle: AsyncResult) -> bool:
+    """Si alguna tarea de la cadena ya arrancó, aunque la última siga esperando.
+
+    Las tareas de un `chain` se enlazan hacia atrás por `.parent`. Para una tarea suelta
+    no hay padres y esto es simplemente False.
+
+    Args:
+        handle: El asidero que devolvió el encolado.
+
+    Returns:
+        True si alguna tarea de la cadena empezó o terminó.
+    """
+    ancestor = handle.parent
+
+    while ancestor is not None:
+        if ancestor.state in ("STARTED", "SUCCESS"):
+            return True
+        ancestor = ancestor.parent
+
+    return False
