@@ -473,6 +473,103 @@ pasa la primera y solo falla en la segunda.
 En el registro del servidor se ve el rechazo, y `find storage/uploads` confirma que **el
 archivo se borró**: sin un trabajo que lo use, es basura.
 
+### «¿Qué otras operaciones hay?»
+
+El catálogo tiene seis. `sanitize` es la compuesta —encadena `clean`, `anonymize` y
+`compress`— y las otras cinco son simples. Las cuatro que no aparecen en el recorrido
+principal:
+
+**`inspect`** no modifica nada: audita qué revela la foto. Es la mejor apertura de una
+demostración, porque mostrar que una imagen cualquiera lleva datos escondidos convence
+más que explicarlo:
+
+```bash
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file img_test/grupo.jpg --op inspect --wait
+```
+
+```
+╭───────── Resultado ──────────╮
+│           Format  JPEG       │
+│             Size  1280, 1024 │
+│             Mode  RGB        │
+│ Metadata entries  2          │
+│          Has gps  no         │
+╰──────────────────────────────╯
+
+Esta operación no genera archivo: su resultado es el informe de arriba.
+```
+
+Es la única sin archivo de salida, y por eso pedirle una descarga responde `NO_OUTPUT`.
+`Has gps` es el dato que más impresiona: con una foto sacada del celular diría **sí**, y
+serían las coordenadas de dónde se tomó.
+
+**`clean`** borra los metadatos y **no toca un solo píxel**:
+
+```bash
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file img_test/grupo.jpg --op clean --wait -o /tmp/limpia.jpg
+```
+
+La imagen sale idéntica y del mismo peso; lo único que cambió es lo que no se ve. Es
+`sanitize` sin las otras dos etapas.
+
+**`anonymize`** cubre las caras y nada más:
+
+```bash
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file img_test/grupo.jpg --op anonymize \
+    --mode pixelate --strength 25 --wait -o /tmp/anonima.jpg
+```
+
+`--mode` acepta `blur` (difumina), `pixelate` (cuadricula) o `box` (tapa con negro), y
+`--strength` va de 1 a 100. La intensidad es **relativa al tamaño de cada cara**, no en
+píxeles: el mismo valor tapa igual una foto de celular y una de cámara.
+
+**`compress`** achica el archivo, sin tocar caras ni metadatos:
+
+```bash
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file img_test/paisaje.jpg --op compress \
+    --quality 60 --max-size 600 --wait -o /tmp/comprimida.jpg
+```
+
+| Parámetro | Qué hace |
+|---|---|
+| `--quality 60` | calidad de la recompresión JPEG, de 1 a 95. Más baja, más chico y más borroso |
+| `--max-size 600` | lado máximo en píxeles; si la imagen lo supera se reduce respetando la proporción |
+
+```
+│  Tamaño original  233.3 KB │
+│     Tamaño final  61.4 KB  │
+│    Saved percent  74       │
+```
+
+De 752×600 a 600×479 y de 233 KB a 61 KB: un 74% menos.
+
+**`convert`** cambia el formato del archivo:
+
+```bash
+./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file img_test/paisaje.jpg --op convert \
+    --format webp --quality 85 --wait -o /tmp/convertida.webp
+```
+
+`--format` acepta `webp`, `jpeg` o `png`. El mismo paisaje, en los dos extremos:
+
+| Formato | Peso | Por qué |
+|---|---|---|
+| original (JPEG) | 233 KB | — |
+| `--format webp` | **165 KB** | comprime mejor que JPEG a calidad equivalente |
+| `--format png` | **975 KB** | PNG **no pierde información**: guarda todos los píxeles exactos |
+
+Que PNG *agrande* el archivo no es un error, y vale la pena señalarlo: `--quality` no
+tiene efecto sobre PNG, porque su compresión no descarta nada. Convertir de JPEG a PNG no
+recupera lo que el JPEG ya perdió — solo deja de perder más de ahí en adelante.
+
+Por eso `sanitize` **no incluye `convert`**: cambiar de formato es una decisión explícita
+del usuario, no parte de "dejar esta foto lista para publicar".
+
 ### «¿Un usuario puede ver los trabajos de otro?»
 
 ```bash
