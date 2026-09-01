@@ -49,38 +49,80 @@ alguien lo va a ir a buscar.
 
 ## Preparación
 
-**Si tenés una foto real a mano, copiala a `/tmp/foto.jpg` y usá esa**: es más
-convincente que un archivo generado. Si no, esto arma una:
+Cuatro cosas, en orden. Todas se pueden repetir sin romper nada.
+
+**1. Las dependencias** (solo la primera vez, o si cambió `requirements.txt`):
 
 ```bash
-./venv/bin/python -c "from PIL import Image; Image.effect_noise((900, 700), 60).convert('RGB').save('/tmp/foto.jpg', 'JPEG', quality=90)"
+./venv/bin/pip install -r requirements.txt
 ```
 
-Pesa unos 450 KB, lo bastante para que la transferencia ocurra en varios bloques. Tiene
-que ser una imagen de verdad: desde el paso 2 el proceso de ingreso la abre y verifica, y
-un archivo de relleno con la cabecera de un JPEG ya no pasa.
-
-Y conviene empezar con el almacenamiento vacío, para que lo que aparezca durante la
-demostración sea solo lo de hoy:
+**2. Redis**, que es el intermediario entre el servidor y los workers:
 
 ```bash
-find storage/uploads -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
+docker run -d --name redis-final -p 6380:6379 redis:7-alpine   # solo la primera vez
+docker start redis-final                                        # las siguientes veces
+docker exec redis-final redis-cli ping                          # tiene que decir PONG
 ```
 
-Borra todo lo que haya adentro salvo el `.gitkeep`, que es el archivo con el que git
-conserva la carpeta vacía en el repositorio. Con `rm -rf storage/uploads/*` alcanzaría,
-pero falla si la carpeta ya está vacía.
+| Parte | Qué hace |
+|---|---|
+| `run -d` | crea el contenedor y lo deja corriendo de fondo |
+| `--name redis-final` | un nombre fijo, para poder frenarlo y arrancarlo por nombre |
+| `-p 6380:6379` | el 6379 de adentro sale como 6380 afuera (el 6379 de esta máquina está ocupado) |
+| `exec … redis-cli ping` | ejecuta el cliente de Redis adentro del contenedor: la prueba de vida |
+
+**3. Las imágenes de prueba** ya están en el repositorio, en `img_test/`. No hay que
+generar nada:
+
+```bash
+ls img_test/
+```
+
+| Archivo | Qué tiene | Para qué |
+|---|---|---|
+| `grupo.jpg` | una foto grupal con 12 caras y 2 metadatos EXIF | el envío principal |
+| `grupo_copia.jpg` | copia byte a byte del anterior | la deduplicación: mismo contenido, otro nombre |
+| `paisaje.jpg` | un paisaje, sin personas | que no haya caras es un resultado válido |
+| `rota.jpg` | `grupo.jpg` sin sus últimos 5 bytes | el rechazo por imagen corrupta |
+
+Los 2 metadatos de `grupo.jpg` son los que deja una cámara de verdad: marca y software.
+Es una foto de grupo a propósito: se ve mejor el detector encontrando **doce** caras y
+cubriéndolas todas. Si tenés una foto propia con caras, usala en lugar de esta.
+
+**4. Empezar de cero**, para que lo que aparezca sea solo lo de hoy:
+
+```bash
+find storage/uploads storage/results -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
+rm -f data/jobs.db data/jobs.db-shm data/jobs.db-wal
+```
+
+La primera línea vacía el volumen de imágenes conservando los `.gitkeep` (los archivos
+con los que git mantiene las carpetas vacías); la segunda borra la base y los dos
+archivos auxiliares del modo WAL. Sin comodines a propósito: `rm storage/uploads/*`
+falla en zsh cuando la carpeta ya está vacía.
+
+---
+
+## El flujo completo, en resumen
+
+Los comandos en orden, ya explicados en detalle en los pasos siguientes. Esta secuencia
+está verificada de punta a punta:
+
+```
+terminal 1   ./venv/bin/python -m app.server --port 9876
+terminal 2   ./venv/bin/celery -A app.worker.celery_app worker --loglevel=info
+terminal 3   ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+                 --action submit --file img_test/grupo.jpg --op sanitize \
+                 --mode blur --quality 70 --max-size 900 --wait -o /tmp/saneada.jpg
+terminal 3   (verificar: el bloque de python del paso 3)
+terminal 3   ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 --action history
+             Ctrl-C en la terminal 1 y en la 2
+```
 
 ---
 
 ## Paso 1 — Arrancar el servidor y el worker
-
-Hace falta **Redis** corriendo, que es el intermediario entre el servidor y los workers:
-
-```bash
-docker run -d --name redis-final -p 6380:6379 redis:7-alpine
-docker exec redis-final redis-cli ping     # tiene que responder PONG
-```
 
 En la **terminal 1**, el servidor:
 
@@ -167,7 +209,7 @@ En la **terminal 3**:
 
 ```bash
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/retrato.jpg --op sanitize --mode blur --quality 70 \
+    --action submit --file img_test/grupo.jpg --op sanitize --mode blur --quality 70 \
     --max-size 900 --wait -o /tmp/saneada.jpg
 ```
 
@@ -188,19 +230,19 @@ En la **terminal 3**:
 │   Trabajo  cf4739e2-d3aa-4fa7-b930-68d7b88bd3f1 │
 │    Estado  ◷ QUEUED                             │
 │ Operación  sanitize                             │
-│    Imagen  retrato.jpg (499.1 KB)               │
+│    Imagen  grupo.jpg (312.2 KB)               │
 ╰─────────────────────────────────────────────────╯
 
 ╭──────── Resultado ─────────╮
 │ Metadata removed  2        │
-│ Caras detectadas  1        │
+│ Caras detectadas  12       │
 │             Mode  blur     │
-│  Tamaño original  499.1 KB │
-│     Tamaño final  70.6 KB  │
-│    Saved percent  86       │
+│  Tamaño original  312.2 KB │
+│     Tamaño final  78.3 KB  │
+│    Saved percent  75       │
 ╰────────────────────────────╯
 
-✓ Resultado guardado en /tmp/saneada.jpg (70.6 KB)
+✓ Resultado guardado en /tmp/saneada.jpg (78.3 KB)
 ```
 
 El informe junta lo que devolvió **cada etapa de la cadena**: los metadatos que borró la
@@ -213,7 +255,7 @@ conectado 127.0.0.1:54968 (1 en total)                  ← 1. el servidor acept
 pedido 'submit' (511102 bytes de payload)               ← 2. lee el header
 [ingreso] cf4739e2-… revisado: JPEG, 8f3a1c9e2b04       ← 3. el HIJO revisa
 trabajo cf4739e2-… encolado (tarea 0698706e-…)          ← 4. va a la cola
-trabajo cf4739e2-… aceptado: 'sanitize' sobre 'retrato.jpg'
+trabajo cf4739e2-… aceptado: 'sanitize' sobre 'grupo.jpg'
 trabajo cf4739e2-… en proceso                           ← 5. un worker lo tomó
 trabajo cf4739e2-… terminado                            ← 6. la cadena completó
 descarga de cf4739e2-…: out.jpg                         ← 7. el cliente lo baja
@@ -247,7 +289,7 @@ find storage -type f ! -name .gitkeep
 ```
 
 ```
-storage/uploads/cf4739e2-…/retrato.jpg    ← el original, tal como llegó
+storage/uploads/cf4739e2-…/grupo.jpg    ← el original, tal como llegó
 storage/results/cf4739e2-…/out.jpg        ← el resultado
 ```
 
@@ -269,7 +311,7 @@ que el sistema hizo lo que promete:
 ./venv/bin/python -c "
 from PIL import Image
 from pathlib import Path
-for nombre, ruta in [('enviado', '/tmp/retrato.jpg'), ('saneado', '/tmp/saneada.jpg')]:
+for nombre, ruta in [('enviado', 'img_test/grupo.jpg'), ('saneado', '/tmp/saneada.jpg')]:
     with Image.open(ruta) as imagen:
         print(f'  {nombre:<9} {len(imagen.getexif())} metadatos   {imagen.size}   {Path(ruta).stat().st_size // 1024} KB')
 "
@@ -325,7 +367,7 @@ Cada punto es independiente y se muestra en menos de un minuto.
 ```bash
 for numero in 1 2 3 4 5 6; do
     ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-        --action submit --file /tmp/foto.jpg --op clean &
+        --action submit --file img_test/grupo.jpg --op clean &
 done
 ```
 
@@ -339,7 +381,7 @@ El mismo comando cambiando la dirección:
 
 ```bash
 ./venv/bin/python -m app.client --user ana --host ::1 --port 9876 \
-    --action submit --file /tmp/foto.jpg --op clean
+    --action submit --file img_test/grupo.jpg --op clean
 ```
 
 En el registro la conexión figura como `::1:puerto` en vez de `127.0.0.1:puerto`. Es el
@@ -355,8 +397,9 @@ datos**. Pero el monitor, al detectar que una tarea terminó, actualiza el índi
 memoria** y no la base: persistir los cambios de estado es la parte que falta. Así que la
 base sigue viendo todo `QUEUED` y la consulta nunca encuentra nada.
 
-Se puede mostrar marcando el trabajo a mano, que es exactamente lo que hará esa pieza
-cuando exista:
+Se puede mostrar marcando el trabajo a mano —que es exactamente lo que hará esa pieza
+cuando exista— y reenviando `grupo_copia.jpg`, que es copia byte a byte de
+`grupo.jpg` con otro nombre:
 
 ```bash
 ./venv/bin/python -c "
@@ -365,9 +408,9 @@ base = sqlite3.connect('data/jobs.db')
 base.execute(\"UPDATE jobs SET status = 'DONE'\")
 base.commit()
 "
-cp /tmp/retrato.jpg /tmp/otro_nombre.jpg
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/otro_nombre.jpg --op sanitize --mode blur --quality 70
+    --action submit --file img_test/grupo_copia.jpg --op sanitize \
+    --mode blur --quality 70 --max-size 900
 ```
 
 ```
@@ -381,8 +424,10 @@ Esta imagen ya había sido procesada con esta misma operación.
 Devolvió el identificador del trabajo **anterior**, y `find storage/uploads` muestra una
 sola copia: la segunda se borró.
 
-La identidad de un trabajo son cuatro campos, no solo el hash. Cambiando `--mode pixelate`
-el mismo archivo vuelve a ser un trabajo nuevo, porque el resultado sería otro.
+**Los parámetros tienen que ser los mismos que los del paso 2**, `--max-size 900`
+incluido: la identidad de un trabajo son cuatro campos —usuario, contenido, operación y
+parámetros—, no solo el hash. Si cambiás `--mode pixelate` o quitás el `--max-size`, el
+mismo archivo vuelve a ser un trabajo nuevo, porque el resultado sería otro.
 
 ### «¿Se pierde todo si se reinicia el servidor?»
 
@@ -407,20 +452,16 @@ acá, que admite muchos lectores y un solo escritor.
 El cliente comprueba la extensión, que es lo único que puede ver desde afuera. El que
 mira el contenido es el proceso de ingreso:
 
+`img_test/rota.jpg` es `grupo.jpg` sin sus últimos cinco bytes:
+
 ```bash
-cp /tmp/foto.jpg /tmp/rota.jpg
-./venv/bin/python -c "
-from pathlib import Path
-datos = Path('/tmp/rota.jpg').read_bytes()
-Path('/tmp/rota.jpg').write_bytes(datos[:-5])   # le saco cinco bytes del final
-"
 ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file /tmp/rota.jpg --op clean
+    --action submit --file img_test/rota.jpg --op clean
 ```
 
 ```
 ╭─────────────── El servidor rechazó el pedido (INVALID_IMAGE) ────────────────╮
-│ no se pudo abrir como imagen: image file is truncated (86 bytes not          │
+│ no se pudo abrir como imagen: image file is truncated (81 bytes not          │
 │ processed)                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

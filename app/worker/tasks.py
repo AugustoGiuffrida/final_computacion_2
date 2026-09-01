@@ -72,6 +72,12 @@ def strip_metadata_in(source: Path, destination: Path) -> dict[str, Any]:
     No hay que "borrar" nada: Pillow escribe metadatos únicamente si se le pasan, así que
     guardar la imagen a secas es exactamente quedarse con los píxeles.
 
+    En JPEG se guarda con `quality="keep"`, que reutiliza las tablas de compresión del
+    archivo original en vez de recomprimir. Sin eso, Pillow usa su calidad por defecto y
+    degrada la imagen: dentro de la cadena de saneamiento eso significaba perder calidad
+    dos veces, acá y en la compresión final. Y la degradación no era inocua — introducía
+    artefactos que le hacían ver al detector una cara donde no había.
+
     Args:
         source: Imagen a limpiar.
         destination: Dónde escribir el resultado.
@@ -81,7 +87,9 @@ def strip_metadata_in(source: Path, destination: Path) -> dict[str, Any]:
     """
     with Image.open(source) as image:
         removed = len(image.getexif())
-        image.save(destination)
+        # `quality="keep"` solo existe para JPEG; en PNG la compresión no pierde nada.
+        options = {"quality": "keep"} if image.format == "JPEG" else {}
+        image.save(destination, **options)
 
     return {"metadata_removed": removed}
 

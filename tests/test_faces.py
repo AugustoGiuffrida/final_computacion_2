@@ -59,6 +59,19 @@ class Detection(FaceTestCase):
         self.assertLessEqual(x + face_width, width)
         self.assertLessEqual(y + face_height, height)
 
+    def test_the_same_photo_gives_the_same_count_at_any_size(self) -> None:
+        """Reescalar la foto no cambia cuántas caras hay.
+
+        Con la exigencia por defecto de OpenCV aparecían falsos positivos al agrandar: un
+        recuadro de 80px en una esquina vacía. `minNeighbors` está subido justamente para
+        esto, y esta prueba lo fija.
+        """
+        with Image.open(IMAGEN_CON_CARA) as original:
+            grande = self.working_directory / "grande.jpg"
+            original.convert("RGB").resize((1600, 1600)).save(grande, "JPEG", quality=95)
+
+        self.assertEqual(len(faces.detect(grande)), len(faces.detect(IMAGEN_CON_CARA)))
+
     def test_an_image_without_faces_returns_an_empty_list(self) -> None:
         """No encontrar nada es un resultado válido, no un error."""
         self.assertEqual(faces.detect(self.an_image_without_faces()), [])

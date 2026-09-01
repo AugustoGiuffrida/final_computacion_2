@@ -78,7 +78,12 @@ def detect(path: Path) -> list[tuple[int, int, int, int]]:
     found = detector().detectMultiScale(
         grayscale,
         scaleFactor=1.1,   # cuánto crece la ventana de búsqueda en cada pasada
-        minNeighbors=5,    # cuántas detecciones vecinas se exigen para aceptar una cara
+        # Cuántas detecciones vecinas se exigen para aceptar una cara. El 7 está medido:
+        # con 5 aparecían falsos positivos —recuadros de 80px en esquinas vacías— al
+        # detectar sobre imágenes reescaladas, y con 4 el detector "veía" una cara en un
+        # paisaje. Subirlo lo vuelve más exigente: el precio sería perder caras difíciles
+        # (de perfil, muy chicas), que esta cascada frontal tampoco detecta bien.
+        minNeighbors=7,
         minSize=(30, 30),  # nada más chico que esto es ruido
     )
 
