@@ -79,7 +79,7 @@ class IntakeChannel:
         # canal se cierra. Que puedan estar en None es lo que verifican `review` y `stop`
         # antes de usarlos.
         self._process = None
-        self._connection = None
+        self._pipe = None
         self._receiver = None
         self._stopping = False
 
@@ -105,7 +105,7 @@ class IntakeChannel:
             contestó" y "no pudo decidir" son el mismo caso, y conviene que no tenga que
             distinguirlos.
         """
-        if self._connection is None:
+        if self._pipe is None:
             return ipc.ReviewResponse(
                 job_id=request.job_id,
                 verdict=ipc.UNAVAILABLE,
@@ -117,7 +117,7 @@ class IntakeChannel:
 
         # send() escribe en el pipe
         try:
-            self._connection.send(request)
+            self._pipe.send(request)
         except OSError as failure:
             # El hijo murió y el receptor todavía no rehízo el canal. Sin esto, el
             # BrokenPipeError subiría hasta el manejador de la conexión, que lo
@@ -157,14 +157,14 @@ class IntakeChannel:
         Args:
             event: El cambio de estado a guardar.
         """
-        if self._connection is None:
+        if self._pipe is None:
             logger.warning(
                 "sin canal de ingreso: se pierde el evento %s de %s", event.kind, event.job_id
             )
             return
 
         try:
-            self._connection.send(event)
+            self._pipe.send(event)
         except OSError as failure:
             logger.error(
                 "no se pudo enviar el evento %s de %s: %s", event.kind, event.job_id, failure
@@ -186,7 +186,7 @@ class IntakeChannel:
         self._stopping = True
 
         try:
-            self._connection.send(ipc.SHUTDOWN)
+            self._pipe.send(ipc.SHUTDOWN)
         except (OSError, AttributeError):
             pass  # el canal ya estaba cerrado: no hay a quién pedirle nada
 
@@ -204,9 +204,9 @@ class IntakeChannel:
         # Si el receptor alcanzó a ver el fin de archivo, ya lo cerró. Si no llegó a
         # enterarse antes de que lo cancelaran, el descriptor queda abierto y hay que
         # devolverlo acá.
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
+        if self._pipe is not None:
+            self._pipe.close()
+            self._pipe = None
 
         self._fail_pending("el servidor se está apagando")
         self._process = None
@@ -229,7 +229,7 @@ class IntakeChannel:
         # muriera: sin esta línea no habría forma de detectar su muerte.
         theirs.close()
 
-        self._connection = ours
+        self._pipe = ours
         logger.info("proceso de ingreso lanzado (pid %s)", self._process.pid)
 
     async def _receive_loop(self) -> None:
@@ -243,11 +243,11 @@ class IntakeChannel:
             try:
                 # `poll()` sin argumento no espera nada. Con un argumento —`poll(0.01)`—
                 # bloquearía ese tiempo, que es justo lo que no se puede hacer acá.
-                if not self._connection.poll():
+                if not self._pipe.poll():
                     await asyncio.sleep(POLL_INTERVAL_SECONDS)
                     continue
 
-                self._deliver(self._connection.recv())
+                self._deliver(self._pipe.recv())
 
             except asyncio.CancelledError:
                 raise  # el apagado pidió terminar: esta no se atrapa
@@ -271,10 +271,10 @@ class IntakeChannel:
             True si hay que terminar el bucle de recepción, False si se siguió adelante
             con un hijo nuevo.
         """
-        self._connection.close()
+        self._pipe.close()
 
         if self._stopping:
-            self._connection = None
+            self._pipe = None
             return True
 
         # `join(0)` no espera nada: solo le pide al sistema el estado del hijo, que es lo

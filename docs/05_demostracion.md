@@ -664,13 +664,7 @@ Un envío nuevo se atiende normalmente.
 
 ## Lo que todavía no está
 
-- **Los eventos del ciclo de vida no se persisten**, y arrastra dos cosas: la
-  deduplicación no dispara sola —consulta la base, que sigue viendo todo `QUEUED`— y el
-  historial de sesiones anteriores mostraría estados desactualizados. El monitor ya
-  detecta los cambios; falta que se los cuente al proceso de ingreso para que los escriba.
 - **El historial se arma solo con la memoria** de la sesión actual. Consultar un trabajo
   viejo por su identificador sí funciona —cae a la base—, pero listarlos todos no.
 - **Un reinicio del servidor pierde de vista los trabajos en vuelo.** El worker termina la
   tarea igual y el resultado queda en Redis, pero nadie actualiza el índice.
-- **Falta el despliegue en contenedores.** El volumen compartido está pensado para NFS,
-  para que los workers puedan correr en otra máquina.

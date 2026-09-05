@@ -361,7 +361,7 @@ class WhenThingsGoWrong(IntakeTestCase):
         nada que ver.
         """
         channel = await self.running_channel(child_that_accepts)
-        channel._connection.close()  # el canal quedó roto y nadie lo notó todavía
+        channel._pipe.close()  # el canal quedó roto y nadie lo notó todavía
 
         verdict = await channel.review(self.a_request())
 

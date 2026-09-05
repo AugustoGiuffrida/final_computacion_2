@@ -7,43 +7,17 @@ son recortes conscientes: quedaron afuera por alcance, no por olvido.
 
 ## Lo que falta para completar el diseño actual
 
-### Persistir los eventos del ciclo de vida
-
-**El más importante de la lista.** El monitor detecta los cambios de estado y actualiza el
-índice en memoria, pero **no los escribe en la base**. La tabla `events` existe en el
-esquema y está vacía.
-
-Arrastra dos consecuencias visibles:
-
-- **La deduplicación no dispara sola.** Consulta la base buscando trabajos en `DONE`, y la
-  base sigue viendo todo `QUEUED`. La funcionalidad está implementada y probada, pero en
-  uso real no llega a activarse.
-- **El historial de sesiones anteriores mostraría estados desactualizados**, por lo mismo.
-
-*Cómo:* el monitor le manda los eventos al proceso de ingreso por el pipe —que ya existe— y
-este los escribe. Por el pipe pasarían dos clases de mensaje: la revisión, que espera
-respuesta, y los eventos, que no.
-
-*Tamaño:* unas 85 líneas.
-
 ### Historial completo contra la base
 
-Hoy `history` se arma solo con el índice en memoria de la sesión actual. Consultar un
-trabajo viejo **por su identificador** sí funciona —el registro cae a la base—, pero
-listarlos todos no.
+**El único que queda del diseño.** Hoy `history` se arma solo con el índice en memoria de
+la sesión actual. Consultar un trabajo viejo **por su identificador** sí funciona —el
+registro cae a la base—, pero listarlos todos no.
 
-Depende del punto anterior: mezclar memoria y base solo tiene sentido cuando el estado
-guardado es confiable.
+Lo que lo bloqueaba ya está: desde que se persisten los eventos, el estado guardado en la
+base es confiable y mezclarlo con la memoria tiene sentido.
 
-### Despliegue en contenedores
-
-`Dockerfile` y `docker-compose.yml` con cuatro servicios: Redis, un servidor NFS, el
-servidor y uno o más workers.
-
-Está preparado: la base ya se separó del volumen compartido justamente para esto, y se
-verificó que el montaje NFS entre contenedores funciona. El detalle a cuidar es que
-`addr=` en el volumen tiene que ser una **IP** y no un nombre de servicio, porque el
-montaje lo hace el demonio de Docker, que no está en la red de compose.
+*Cómo:* que `history` consulte las dos fuentes y las una por `job_id`, dándole prioridad a
+la memoria, que siempre está más al día que la base.
 
 ---
 

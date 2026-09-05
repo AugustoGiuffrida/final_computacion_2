@@ -57,15 +57,15 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
    `outgoing.py` (armado de lo que sale) y `registry.py` (índice en memoria de trabajos).
 4. `app/server/ipc.py`, `app/server/database.py` (+ `schema.sql`) y
    `app/server/intake/process.py` — el proceso de ingreso: verifica la imagen con Pillow,
-   calcula su SHA-256, busca duplicados y registra el trabajo en SQLite. Falta persistir
-   los eventos del ciclo de vida, que dependen de los workers.
+   calcula su SHA-256, busca duplicados, registra el trabajo en SQLite y escribe los
+   eventos de su ciclo de vida.
 5. `app/server/main/intake_channel.py` — el canal con el proceso hijo, ya cableado a
    `handle_submit`: toda imagen pasa por la revisión antes de que el trabajo se acepte.
 6. `app/worker/` — Celery y las seis operaciones: `celery_app.py`, `tasks.py` y
    `faces.py` (detección con cascadas Haar de OpenCV 4).
 7. `app/server/main/jobs.py` — el puente con la cola: encolar y el monitor que traduce
    los estados de Celery a los del protocolo.
-8. `tests/` — 176 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
+8. `tests/` — 189 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
    workers reales.
 9. `Dockerfile`, `.dockerignore` y `docker-compose.yml` — el despliegue: una sola imagen
    para el servidor y los workers, y Redis al lado. Documentado en `INSTALL.md`.
@@ -79,12 +79,10 @@ y el principal no debe importar ninguno de los dos.
 
 El detalle está en `TODO.md`. En orden de dependencia:
 
-1. **Persistir los eventos del ciclo de vida.** El monitor de la cola actualiza el índice
-   en memoria pero no la base, y la consulta de duplicados filtra por `status='DONE'` en la
-   base: la deduplicación es código muerto en producción.
-2. **El historial completo contra SQLite.** Hoy sale del índice en memoria, que se pierde
-   al reiniciar. Depende del punto anterior.
-3. **Recuperar los trabajos en vuelo tras un reinicio del servidor.**
+1. **El historial completo contra SQLite.** Hoy `history` se arma solo con el índice en
+   memoria, que se pierde al reiniciar. Consultar un trabajo viejo por su identificador sí
+   funciona, porque cae a la base; listarlos todos, no.
+2. **Recuperar los trabajos en vuelo tras un reinicio del servidor.**
 
 ---
 
