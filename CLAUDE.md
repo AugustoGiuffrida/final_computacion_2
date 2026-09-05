@@ -12,10 +12,9 @@ oralmente. El desarrollo debe hacerse de forma incremental, con commits frecuent
 
 ## 1. Estado actual — LEER ANTES DE ESCRIBIR CÓDIGO
 
-La documentación de diseño está **completa**. El código va por la primera etapa: el
-cliente entero y el proceso principal del servidor, que acepta conexiones, lee mensajes
-respetando el framing y despacha los pedidos. Ningún pedido se atiende todavía: los cuatro
-responden un error de "no implementado", porque necesitan componentes sin aprobar.
+La documentación de diseño está **completa** y el código también: los cuatro pedidos del
+protocolo funcionan de punta a punta, con el proceso de ingreso, los workers y el
+despliegue en contenedores. Lo que falta está en `TODO.md` y es acotado.
 
 El profesor aprueba el proyecto **por partes**. Hasta ahora aprobó:
 
@@ -26,13 +25,11 @@ El profesor aprueba el proyecto **por partes**. Hasta ahora aprobó:
 | ✅ El **proceso principal del servidor** | el que atiende a los clientes |
 | ✅ Que se comuniquen por **sockets** | la comunicación cliente-servidor |
 
-**No aprobado todavía** (diseñado pero pendiente): el protocolo de aplicación (catálogo
-de mensajes, códigos de error, modelo de identidad), el proceso de ingreso, Celery y los
-workers, Redis, SQLite, Docker.
-
-**Regla práctica**: no escribir código de lo no aprobado. Si algo es imprescindible para
-lo aprobado —como delimitar mensajes sobre TCP— implementarlo en su versión mínima y
-aislada, para poder cambiarlo sin arrastrar el resto.
+**Lo demás se construyó sin esperar la aprobación**, por decisión explícita del usuario: el
+protocolo de aplicación (catálogo de mensajes, códigos de error, modelo de identidad), el
+proceso de ingreso, Celery y los workers, Redis, SQLite y Docker están implementados y
+probados. Si algo se objeta en la defensa, se cambia. La regla anterior de "no escribir
+código de lo no aprobado" **ya no aplica y no hay que reponerla**.
 
 ### Distinción importante: framing vs protocolo
 
@@ -68,23 +65,26 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
    `faces.py` (detección con cascadas Haar de OpenCV 4).
 7. `app/server/main/jobs.py` — el puente con la cola: encolar y el monitor que traduce
    los estados de Celery a los del protocolo.
-8. `tests/` — 174 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
+8. `tests/` — 176 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
    workers reales.
-7. `docs/05_demostracion.md` — recorrido de demostración, comando por comando.
+9. `Dockerfile`, `.dockerignore` y `docker-compose.yml` — el despliegue: una sola imagen
+   para el servidor y los workers, y Redis al lado. Documentado en `INSTALL.md`.
+10. `docs/05_demostracion.md` — recorrido de demostración, comando por comando.
 
 `app/server/` se divide en `main/` (proceso principal) e `intake/` (proceso hijo), con lo
 compartido en la raíz. La separación no es cosmética: el hijo importa Pillow y `sqlite3`,
 y el principal no debe importar ninguno de los dos.
 
-### Próximos pasos, en este orden
+### Lo que falta
 
-Cada uno agrega un pedido del protocolo, de menor a mayor dependencia:
+El detalle está en `TODO.md`. En orden de dependencia:
 
-1. `history` — el más simple, no necesita estado.
-2. `submit` — recibir la imagen, guardarla, generar el `job_id`.
-3. `status` y `download` — contra el índice en memoria.
-
-Todos requieren aprobación previa de los componentes que involucran.
+1. **Persistir los eventos del ciclo de vida.** El monitor de la cola actualiza el índice
+   en memoria pero no la base, y la consulta de duplicados filtra por `status='DONE'` en la
+   base: la deduplicación es código muerto en producción.
+2. **El historial completo contra SQLite.** Hoy sale del índice en memoria, que se pierde
+   al reiniciar. Depende del punto anterior.
+3. **Recuperar los trabajos en vuelo tras un reinicio del servidor.**
 
 ---
 
