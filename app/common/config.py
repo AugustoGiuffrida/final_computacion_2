@@ -10,6 +10,7 @@ disparatados, estos expresan reglas de la aplicación.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # ─────────────────────────────── red ───────────────────────────────
@@ -30,7 +31,10 @@ LISTEN_ON_ALL_INTERFACES = None
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Directorio raíz de los archivos.
-STORAGE_DIR = PROJECT_ROOT / "storage"
+# Las rutas y las URLs admiten variable de entorno, que es como se configura un
+# contenedor: la imagen es siempre la misma y el entorno decide dónde está cada cosa. Sin
+# variable definida valen estos valores, que son los de desarrollo.
+STORAGE_DIR = Path(os.environ.get("IMAGENES_STORAGE_DIR", PROJECT_ROOT / "storage"))
 
 # Originales, en un subdirectorio por trabajo.
 UPLOADS_DIR = STORAGE_DIR / "uploads"
@@ -47,7 +51,7 @@ RESULTS_DIR = STORAGE_DIR / "results"
 #    NFS no provee—. El volumen compartido va a ser NFS para que los workers lo vean.
 # 2. No hace falta que lo sea: la escribe el proceso de ingreso y la lee el principal,
 #    que son padre e hijo y viven siempre en la misma máquina.
-DATABASE_DIR = PROJECT_ROOT / "data"
+DATABASE_DIR = Path(os.environ.get("IMAGENES_DATABASE_DIR", PROJECT_ROOT / "data"))
 DATABASE_PATH = DATABASE_DIR / "jobs.db"
 
 # ─────────────────────────── imágenes ───────────────────────────
@@ -103,8 +107,10 @@ CONVERT_FORMATS = ("webp", "jpeg", "png")
 # Redis local, en el contenedor redis-final (puerto 6380: el 6379 lo ocupa otro
 # servicio de esta máquina). Broker y backend son bases distintas del mismo Redis:
 # la 0 lleva los mensajes "hay trabajo", la 1 los resultados de cada tarea.
-CELERY_BROKER_URL = "redis://localhost:6380/0"
-CELERY_RESULT_BACKEND = "redis://localhost:6380/1"
+CELERY_BROKER_URL = os.environ.get("IMAGENES_BROKER_URL", "redis://localhost:6380/0")
+CELERY_RESULT_BACKEND = os.environ.get(
+    "IMAGENES_RESULT_BACKEND", "redis://localhost:6380/1"
+)
 
 # ─────────────────────────── historial ───────────────────────────
 
