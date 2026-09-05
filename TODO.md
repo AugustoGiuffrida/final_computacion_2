@@ -134,5 +134,6 @@ sería otro cliente hablando el mismo idioma.
   Son tres líneas.
 - **`ProgressCallback` en `protocol.py`** quedó con el comentario al costado, el único con
   el estilo viejo: la limpieza de constantes solo alcanzó a las que tenían `Final`.
-- **`image_server.py` tiene 42% de docstring**, bastante más que el resto. Merece la misma
-  pasada de recorte que se le hizo a los otros módulos.
+- **`image_server.py` es el que más docstring acumula**: 261 líneas, 49% del archivo. Como
+  proporción hay módulos más altos —`incoming.py` llega a 74%— pero ninguno tiene tanto
+  texto junto. Merece la misma pasada de recorte que se le hizo a los otros.

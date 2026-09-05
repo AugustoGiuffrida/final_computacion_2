@@ -69,7 +69,7 @@ pip install -r requirements.txt
 **2. Redis**, que es el intermediario entre el servidor y los workers:
 
 ```bash
-docker run -d --name redis-final -p 6380:6379 redis:7-alpine   # solo la primera vez
+docker run -d --name redis-final -p 6380:6379 redis:7.4-alpine   # solo la primera vez
 docker start redis-final                                        # las siguientes veces
 docker exec redis-final redis-cli ping                          # tiene que decir PONG
 ```

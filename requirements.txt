@@ -1,15 +1,12 @@
-# Dependencias de ejecución.
+# Dependencias de ejecución, con la versión fijada: el mismo requirements da el mismo
+# entorno acá y dentro del contenedor.
 #
-# La lógica de red del cliente y del servidor funciona solo con la biblioteca
-# estándar: argparse y asyncio vienen con Python. Las dependencias externas de
-# procesamiento (Pillow, OpenCV, Celery, Redis) se agregan cuando se implementen
-# los componentes que las necesitan.
-#
-# La de acá abajo es exclusiva de la PRESENTACIÓN del cliente. Ningún módulo de
-# red la importa, de modo que la capa de protocolo sigue siendo independiente de
-# cómo se muestren las cosas.
+# La lógica de red no figura porque no necesita nada: argparse y asyncio vienen con la
+# biblioteca estándar. Todo lo de abajo es procesamiento de imágenes o presentación.
 
-# Salida con formato: tablas del historial, barras de progreso, colores.
+# Salida con formato: tablas del historial, barras de progreso, colores. La usa solo el
+# cliente; ningún módulo de red la importa, así que la capa de protocolo sigue siendo
+# independiente de cómo se muestren las cosas.
 rich==15.0.0
 
 # Apertura y verificación de imágenes. La usa el proceso de ingreso para comprobar que lo

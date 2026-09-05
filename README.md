@@ -32,7 +32,7 @@ autenticación: es quien dice ser.
 ### Enviar una imagen
 
 ```bash
-python -m app.client --user ana --action submit --file foto.jpg --op sanitize --wait
+python -m app.client --user ana --action submit --file img_test/grupo.jpg --op sanitize --wait
 ```
 
 | Parámetro | Qué hace |
@@ -81,17 +81,17 @@ Cada usuario ve **solo sus trabajos**: pedir el de otro responde `FORBIDDEN`.
 
 ```bash
 # ¿Qué revela esta foto?
-python -m app.client --user ana --action submit --file foto.jpg --op inspect --wait
+python -m app.client --user ana --action submit --file img_test/grupo.jpg --op inspect --wait
 
 # Sacarle los metadatos, sin tocar la imagen
-python -m app.client --user ana --action submit --file foto.jpg --op clean --wait -o limpia.jpg
+python -m app.client --user ana --action submit --file img_test/grupo.jpg --op clean --wait -o limpia.jpg
 
 # Dejarla lista para publicar: caras cubiertas, sin metadatos y liviana
-python -m app.client --user ana --action submit --file foto.jpg --op sanitize \
+python -m app.client --user ana --action submit --file img_test/grupo.jpg --op sanitize \
     --mode blur --quality 70 --max-size 1200 --wait -o publicable.jpg
 
 # Convertir a WebP
-python -m app.client --user ana --action submit --file foto.jpg --op convert \
+python -m app.client --user ana --action submit --file img_test/grupo.jpg --op convert \
     --format webp --wait -o foto.webp
 ```
 
@@ -138,5 +138,5 @@ volumen de imágenes.
 python -m unittest discover -s tests -t .
 ```
 
-172 pruebas. Levantan servidores reales en puertos libres, lanzan procesos hijos de verdad
+176 pruebas. Levantan servidores reales en puertos libres, lanzan procesos hijos de verdad
 y usan bases SQLite temporales. No necesitan Redis: la cola se sustituye por un doble.

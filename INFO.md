@@ -209,7 +209,7 @@ absolutos: así `--strength 15` tapa igual una foto de celular y una de cámara.
 
 ## 12. Qué se probó y cómo
 
-172 pruebas sobre `unittest`, con una decisión de fondo: **cada pieza se prueba con sus
+176 pruebas sobre `unittest`, con una decisión de fondo: **cada pieza se prueba con sus
 vecinos sustituidos, y las integraciones reales se verifican a mano**.
 
 - Las pruebas del servidor levantan **servidores TCP reales** en puertos libres y los
