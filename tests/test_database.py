@@ -309,3 +309,63 @@ class Events(DatabaseTestCase):
             self.writer.find_duplicate("ana", "abc123", "anonymize", request.parameters),
             "job-1",
         )
+
+
+class ListingFromTheArchive(DatabaseTestCase):
+    """Lo que `JobReader.list_for` devuelve y en qué orden.
+
+    Es la mitad del historial que sobrevive a un reinicio: la otra es la memoria.
+    """
+
+    def a_reader(self) -> database.JobReader:
+        """Abre un lector sobre la base de la prueba.
+
+        Returns:
+            El lector, ya registrado para cerrarse al terminar.
+        """
+        reader = database.JobReader(self.database_path)
+        self.addCleanup(reader.close)
+
+        return reader
+
+    def test_the_newest_comes_first(self) -> None:
+        for number in range(3):
+            self.writer.insert(self.a_request(job_id=f"job-{number}"), f"hash-{number}")
+
+        listed = self.a_reader().list_for("ana", 10)
+
+        self.assertEqual([row["id"] for row in listed], ["job-2", "job-1", "job-0"])
+
+    def test_only_the_jobs_of_that_user(self) -> None:
+        self.writer.insert(self.a_request(job_id="de-ana", user="ana"), "hash-1")
+        self.writer.insert(self.a_request(job_id="de-beto", user="beto"), "hash-2")
+
+        listed = self.a_reader().list_for("ana", 10)
+
+        self.assertEqual([row["id"] for row in listed], ["de-ana"])
+
+    def test_the_limit_is_respected(self) -> None:
+        for number in range(5):
+            self.writer.insert(self.a_request(job_id=f"job-{number}"), f"hash-{number}")
+
+        self.assertEqual(len(self.a_reader().list_for("ana", 2)), 2)
+
+    def test_a_user_without_jobs_gets_an_empty_list(self) -> None:
+        self.writer.insert(self.a_request(user="ana"), "hash-1")
+
+        self.assertEqual(self.a_reader().list_for("nadie", 10), [])
+
+    def test_a_database_that_does_not_exist_yet_is_not_an_error(self) -> None:
+        """El servidor puede arrancar antes de que el ingreso cree la base."""
+        reader = database.JobReader(self.working_directory / "todavia-no.db")
+
+        self.assertEqual(reader.list_for("ana", 10), [])
+
+    def test_the_state_written_by_the_events_is_what_comes_back(self) -> None:
+        self.writer.insert(self.a_request(), "hash-1")
+        self.writer.record_event(ipc.JobEvent("job-1", ipc.DONE, result_path="/vol/out.jpg"))
+
+        row = self.a_reader().list_for("ana", 10)[0]
+
+        self.assertEqual(row["status"], messages.DONE)
+        self.assertEqual(row["result_path"], "/vol/out.jpg")

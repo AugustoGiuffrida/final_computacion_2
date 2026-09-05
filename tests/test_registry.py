@@ -247,3 +247,109 @@ class ResolutionAgainstTheArchive(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListingAcrossBothSources(unittest.TestCase):
+    """El historial completo: lo de esta ejecución y lo de las anteriores, en un solo orden.
+
+    Antes `list_for` miraba solo la memoria, así que reiniciar el servidor vaciaba el
+    historial aunque los trabajos siguieran en la base.
+    """
+
+    def setUp(self) -> None:
+        """Crea una base temporal donde escribir trabajos de ejecuciones anteriores."""
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.working_directory = Path(self._temporary_directory.name)
+        self.database_path = self.working_directory / "jobs.db"
+        self.writer = database.JobWriter(self.database_path)
+
+        self.addCleanup(self._temporary_directory.cleanup)
+        self.addCleanup(self.writer.close)
+
+    def store(self, job_id: str, user: str = "ana", status: str | None = None) -> None:
+        """Escribe un trabajo en la base, como si fuera de una ejecución anterior.
+
+        Args:
+            job_id: Identificador del trabajo.
+            user: Su dueño.
+            status: Si se indica DONE, se le agrega el evento que lo deja terminado.
+        """
+        self.writer.insert(
+            ipc.ReviewRequest(
+                job_id=job_id, user=user, operation="clean",
+                parameters={}, stored_path=self.working_directory / "foto.jpg",
+            ),
+            "c" * 64,
+        )
+        if status == messages.DONE:
+            self.writer.record_event(ipc.JobEvent(job_id, ipc.DONE, result_path="/vol/out.jpg"))
+
+    def a_registry(self) -> JobRegistry:
+        """Un registro conectado a la base de la prueba.
+
+        Returns:
+            El registro, con su lector ya registrado para cerrarse.
+        """
+        reader = database.JobReader(self.database_path)
+        self.addCleanup(reader.close)
+
+        return JobRegistry(reader)
+
+    def test_jobs_from_previous_runs_are_listed(self) -> None:
+        self.store("job-viejo")
+        registro = self.a_registry()
+
+        listado = registro.list_for("ana", 10)
+
+        self.assertEqual([job.job_id for job in listado], ["job-viejo"])
+
+    def test_memory_and_archive_are_merged_without_repeating(self) -> None:
+        """Un trabajo de esta ejecución está en las dos fuentes y debe aparecer una vez."""
+        self.store("job-de-ahora")
+        registro = self.a_registry()
+        en_memoria = new_job("ana", "clean", {}, "foto.jpg")
+        en_memoria.job_id = "job-de-ahora"
+        registro.add(en_memoria)
+
+        listado = registro.list_for("ana", 10)
+
+        self.assertEqual([job.job_id for job in listado], ["job-de-ahora"])
+
+    def test_memory_wins_because_it_is_fresher(self) -> None:
+        """La base va un paso atrás: el monitor la actualiza recién al mandar el evento.
+
+        Si ganara la base, un trabajo recién terminado se vería PROCESSING un instante.
+        """
+        self.store("job-1")  # queda en QUEUED en la base
+        registro = self.a_registry()
+        en_memoria = new_job("ana", "clean", {}, "foto.jpg")
+        en_memoria.job_id = "job-1"
+        en_memoria.status = messages.DONE
+        registro.add(en_memoria)
+
+        self.assertEqual(registro.list_for("ana", 10)[0].status, messages.DONE)
+
+    def test_the_archive_does_not_leak_other_users(self) -> None:
+        self.store("de-beto", user="beto")
+        registro = self.a_registry()
+
+        self.assertEqual(registro.list_for("ana", 10), [])
+
+    def test_the_limit_applies_to_the_union(self) -> None:
+        """El límite es del resultado, no de cada fuente por separado."""
+        for number in range(3):
+            self.store(f"viejo-{number}")
+        registro = self.a_registry()
+        for number in range(3):
+            reciente = new_job("ana", "clean", {}, "foto.jpg")
+            reciente.job_id = f"nuevo-{number}"
+            registro.add(reciente)
+
+        self.assertEqual(len(registro.list_for("ana", 4)), 4)
+
+    def test_without_an_archive_it_is_only_memory(self) -> None:
+        """Las pruebas que no necesitan base siguen funcionando igual."""
+        registro = JobRegistry()
+        registro.add(new_job("ana", "clean", {}, "foto.jpg"))
+
+        self.assertEqual(len(registro.list_for("ana", 10)), 1)

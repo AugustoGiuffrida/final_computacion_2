@@ -664,7 +664,5 @@ Un envío nuevo se atiende normalmente.
 
 ## Lo que todavía no está
 
-- **El historial se arma solo con la memoria** de la sesión actual. Consultar un trabajo
-  viejo por su identificador sí funciona —cae a la base—, pero listarlos todos no.
 - **Un reinicio del servidor pierde de vista los trabajos en vuelo.** El worker termina la
   tarea igual y el resultado queda en Redis, pero nadie actualiza el índice.

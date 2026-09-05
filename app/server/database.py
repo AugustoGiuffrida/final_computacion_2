@@ -196,6 +196,35 @@ class JobReader:
 
         return dict(row) if row else None
 
+    def list_for(self, user: str, limit: int) -> list[dict[str, Any]]:
+        """Los últimos trabajos de un usuario, del más reciente al más antiguo.
+
+        Args:
+            user: De quién listar los trabajos.
+            limit: Cuántos traer como máximo.
+
+        Returns:
+            Una fila por trabajo, o lista vacía si la base todavía no fue creada.
+        """
+        connection = self._open()
+        if connection is None:
+            return []
+
+        # El desempate por `rowid` no es un adorno: `created_at` tiene precisión de
+        # segundos, así que dos trabajos seguidos comparten marca de tiempo y sin esto el
+        # orden entre ellos quedaría librado a lo que devuelva SQLite.
+        rows = connection.execute(
+            """
+            SELECT * FROM jobs
+             WHERE user = :user
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT :limit
+            """,
+            {"user": user, "limit": limit},
+        ).fetchall()
+
+        return [dict(row) for row in rows]
+
     def close(self) -> None:
         """Cierra la base, si llegó a abrirse."""
         if self._connection is not None:

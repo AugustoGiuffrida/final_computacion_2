@@ -65,7 +65,7 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
    `faces.py` (detección con cascadas Haar de OpenCV 4).
 7. `app/server/main/jobs.py` — el puente con la cola: encolar y el monitor que traduce
    los estados de Celery a los del protocolo.
-8. `tests/` — 189 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
+8. `tests/` — 201 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
    workers reales.
 9. `Dockerfile`, `.dockerignore` y `docker-compose.yml` — el despliegue: una sola imagen
    para el servidor y los workers, y Redis al lado. Documentado en `INSTALL.md`.
@@ -77,12 +77,10 @@ y el principal no debe importar ninguno de los dos.
 
 ### Lo que falta
 
-El detalle está en `TODO.md`. En orden de dependencia:
-
-1. **El historial completo contra SQLite.** Hoy `history` se arma solo con el índice en
-   memoria, que se pierde al reiniciar. Consultar un trabajo viejo por su identificador sí
-   funciona, porque cae a la base; listarlos todos, no.
-2. **Recuperar los trabajos en vuelo tras un reinicio del servidor.**
+El diseño está completo: `TODO.md` ya no lista partes faltantes, solo mejoras y recortes
+conscientes. La más visible de las mejoras es **recuperar los trabajos en vuelo tras un
+reinicio del servidor**: hoy el worker termina la tarea igual, pero nadie actualiza el
+índice y el trabajo queda mostrando el último estado conocido.
 
 ---
 

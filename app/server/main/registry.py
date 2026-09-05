@@ -228,9 +228,13 @@ class JobRegistry:
     def list_for(self, user: str, limit: int) -> list[Job]:
         """Devuelve los últimos trabajos de un usuario, del más reciente al más antiguo.
 
-        Recorre el registro completo filtrando por usuario. Con unos miles de trabajos el
-        costo es imperceptible; cuando el historial crezca, los trabajos viejos saldrán de
-        SQLite y en memoria quedará solo lo reciente.
+        Junta las dos fuentes: la memoria tiene los de esta ejecución con el estado más
+        fresco, y la base tiene además los de ejecuciones anteriores. Ante el mismo trabajo
+        **gana la memoria**: el monitor la actualiza en el momento, y la base recién cuando
+        el evento llegó al proceso de ingreso.
+
+        A cada fuente se le piden `limit` como mucho. Alcanza: los `limit` más recientes del
+        total tienen que estar entre los `limit` más recientes de cada una.
 
         Args:
             user: De quién listar los trabajos.
@@ -250,4 +254,16 @@ class JobRegistry:
             if len(found) == limit:
                 break
 
-        return found
+        if self._archive is not None:
+            in_memory = {job.job_id for job in found}
+            found.extend(
+                job_from_row(row)
+                for row in self._archive.list_for(user, limit)
+                if row["id"] not in in_memory
+            )
+
+        # `sort` es estable: ante dos trabajos con la misma marca de tiempo queda primero
+        # el de memoria, que es el que llegó ya ordenado.
+        found.sort(key=lambda job: job.created_at, reverse=True)
+
+        return found[:limit]

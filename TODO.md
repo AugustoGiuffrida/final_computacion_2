@@ -3,21 +3,8 @@
 Lo que el sistema **no** hace, ordenado por lo que costaría y lo que aportaría. La mayoría
 son recortes conscientes: quedaron afuera por alcance, no por olvido.
 
----
-
-## Lo que falta para completar el diseño actual
-
-### Historial completo contra la base
-
-**El único que queda del diseño.** Hoy `history` se arma solo con el índice en memoria de
-la sesión actual. Consultar un trabajo viejo **por su identificador** sí funciona —el
-registro cae a la base—, pero listarlos todos no.
-
-Lo que lo bloqueaba ya está: desde que se persisten los eventos, el estado guardado en la
-base es confiable y mezclarlo con la memoria tiene sentido.
-
-*Cómo:* que `history` consulte las dos fuentes y las una por `job_id`, dándole prioridad a
-la memoria, que siempre está más al día que la base.
+**El diseño está completo**: lo que sigue son mejoras y decisiones de alcance, no partes
+faltantes.
 
 ---
 
