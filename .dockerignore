@@ -1,0 +1,12 @@
+# Lo que no tiene por qué entrar en la imagen. Cuanto menos se copia, más chica queda y
+# más se aprovechan las capas cacheadas.
+venv/
+__pycache__/
+*.pyc
+.git/
+tests/
+docs/
+img_test/
+storage/
+data/
+*.md

@@ -134,6 +134,113 @@ sistema de archivos de red, para que los workers puedan correr en otra máquina.
 bloqueo no es confiable— y además no lo necesita: solo la tocan el servidor y su proceso
 hijo, que viven siempre en la misma máquina.
 
+---
+
+## Alternativa: todo en contenedores
+
+En lugar de instalar Python y las dependencias a mano, se puede levantar el sistema
+completo con Docker. Redis, el servidor y los workers quedan aislados; **el cliente sigue
+corriendo fuera**, porque es de quien usa el servicio, no parte del despliegue.
+
+```bash
+docker compose up -d
+```
+
+La primera vez construye la imagen —unos minutos— y las siguientes arranca en segundos.
+
+| Servicio | Qué es |
+|---|---|
+| `redis` | el broker y el result backend |
+| `servidor` | atiende a los clientes en el puerto 9000, con su proceso de ingreso |
+| `worker` | procesa las imágenes |
+
+Ver qué está corriendo y seguir lo que hacen:
+
+```bash
+docker compose ps
+docker compose logs -f servidor
+docker compose logs -f worker      # el registro de todos los workers, mezclado
+```
+
+El cliente se usa igual que siempre, contra el puerto publicado:
+
+```bash
+source venv/bin/activate
+python -m app.client --user ana --host 127.0.0.1 --port 9000 \
+    --action submit --file img_test/grupo.jpg --op sanitize --wait -o /tmp/saneada.jpg
+```
+
+### Más o menos workers, en caliente
+
+```bash
+docker compose up -d --scale worker=3
+```
+
+Crea o elimina contenedores hasta llegar al número pedido. **El servidor no se reinicia**:
+los workers van a buscar trabajo a Redis, así que el servidor no sabe cuántos hay ni le
+importa.
+
+Un worker que se baja a mitad de una imagen no pierde el trabajo: con `task_acks_late`, el
+mensaje se confirma recién al terminar, así que el broker se lo vuelve a dar a otro.
+
+### Bajar todo
+
+```bash
+docker compose down        # frena y elimina los contenedores
+docker compose down -v     # además borra las imágenes guardadas y la base
+```
+
+### Dónde quedan los archivos en los contenedores
+
+Dentro de los contenedores, en dos volúmenes de Docker:
+
+| Volumen | Montado en | Quién lo usa |
+|---|---|---|
+| `imagenes` | `/mnt/imagenes` | el servidor **y** los workers |
+| `base` | `/var/lib/final` | solo el servidor |
+
+Que los workers **no** monten la base es deliberado: no la necesitan y no deben tocarla.
+La escribe únicamente el proceso de ingreso.
+
+Para inspeccionarlos:
+
+```bash
+docker compose exec servidor ls -R /mnt/imagenes
+docker compose exec servidor ls -l /var/lib/final
+```
+
+### Workers en otra máquina
+
+El compose deja todo en una sola máquina, y para eso un volumen de Docker alcanza. Pero el
+diseño admite **workers en otras máquinas**: por la cola viajan rutas, no imágenes, así que
+lo único que hace falta es que todos vean el mismo sistema de archivos.
+
+Ahí el volumen compartido pasa a ser un **sistema de archivos de red**. En la máquina que
+corre los workers, el volumen se define apuntando al servidor NFS real:
+
+```yaml
+volumes:
+  imagenes:
+    driver: local
+    driver_opts:
+      type: "nfs"
+      o: "addr=192.168.1.100,rw,noatime,nolock,nfsvers=4"
+      device: ":/imagenes"
+```
+
+Tres cosas que conviene saber, verificadas:
+
+- **`addr=` tiene que ser una IP**, no un nombre. El montaje lo hace el demonio de Docker,
+  que no está en la red de los contenedores y no resuelve sus nombres.
+- **`nfsvers=4` es necesario**; sin él el montaje falla con `operation not supported`.
+- **La base de datos no puede ir por NFS.** SQLite desaconseja los sistemas de archivos de
+  red —el bloqueo no es confiable y el modo WAL necesita memoria compartida entre
+  procesos— y no lo necesita: la escribe el proceso de ingreso y la lee el principal, que
+  viven siempre en la misma máquina. Por eso son dos volúmenes y no uno.
+
+Y `IMAGENES_BROKER_URL` tiene que apuntar al Redis de la máquina del servidor, no a un
+`redis` local.
+
 ## Apagar
 
 `Ctrl-C` en la terminal 1 y en la 2. El servidor deja de aceptar conexiones, espera a que

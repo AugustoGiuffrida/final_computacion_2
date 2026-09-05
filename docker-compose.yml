@@ -1,0 +1,75 @@
+# Levanta el sistema completo en una máquina: Redis, el servidor y los workers.
+#
+# El cliente NO está acá a propósito: es de quien usa el servicio, no parte del
+# despliegue. Se ejecuta desde afuera contra localhost:9000.
+#
+#   docker compose up -d                  levanta todo
+#   docker compose up -d --scale worker=3 tres workers, en caliente
+#   docker compose logs -f worker         seguir lo que hacen
+#   docker compose down                   bajar todo
+
+services:
+  # El intermediario entre el servidor y los workers. Cumple dos papeles con bases
+  # distintas: la 0 es el broker (los mensajes "hay trabajo") y la 1 el result backend
+  # (en qué anda cada tarea).
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  # Atiende a los clientes. Lanza su propio proceso hijo de ingreso al arrancar.
+  servidor:
+    build: .
+    command: python -m app.server --host 0.0.0.0 --port 9000
+    # Las rutas van acá y no en el Dockerfile porque solo significan algo junto a los
+    # volúmenes de más abajo, y `redis` es un nombre de servicio de ESTE archivo.
+    environment:
+      IMAGENES_STORAGE_DIR: /mnt/imagenes
+      IMAGENES_DATABASE_DIR: /var/lib/final
+      IMAGENES_BROKER_URL: redis://redis:6379/0
+      IMAGENES_RESULT_BACKEND: redis://redis:6379/1
+    ports:
+      - "9000:9000"
+    volumes:
+      # Compartido con los workers: por la cola viajan rutas, no imágenes, así que los
+      # dos tienen que ver el mismo sistema de archivos.
+      - imagenes:/mnt/imagenes
+      # La base es SOLO del servidor y su proceso hijo. Va en su propio volumen y no en
+      # el compartido: SQLite desaconseja los sistemas de archivos de red, y además no
+      # lo necesita porque quienes la usan viven en la misma máquina.
+      - base:/var/lib/final
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Procesa las imágenes. Se pueden levantar tantos como se quiera, en caliente, y el
+  # servidor ni se entera: los workers van a buscar trabajo a Redis, nadie se los asigna.
+  worker:
+    build: .
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    environment:
+      # Sin IMAGENES_DATABASE_DIR: el worker no abre la base en ningún momento.
+      IMAGENES_STORAGE_DIR: /mnt/imagenes
+      IMAGENES_BROKER_URL: redis://redis:6379/0
+      IMAGENES_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      # El mismo volumen que ve el servidor. No monta la base: no la necesita y no debe
+      # tocarla — la regla del escritor único, hecha configuración.
+      - imagenes:/mnt/imagenes
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  # Las imágenes recibidas y sus resultados. En una sola máquina alcanza un volumen de
+  # Docker; para correr workers en OTRA máquina hay que reemplazarlo por un sistema de
+  # archivos de red — ver INSTALL.md.
+  imagenes:
+
+  # La base de datos, local al servidor.
+  base:
