@@ -35,8 +35,10 @@ def results_directory_for(upload_path: Path, job_id: str) -> Path:
     original y el resultado no pueden terminar en árboles distintos.
 
     Args:
-        upload_path: Ruta del ORIGINAL recibido. En la cadena de saneamiento hay que pasar
-            el original y no el intermedio, que ya vive bajo `results/`.
+        upload_path: Ruta del ORIGINAL recibido. Entra como información, no como destino:
+            solo se usa para deducir la raíz del almacenamiento, y el archivo no se abre ni
+            se modifica. En la cadena de saneamiento hay que pasar el original y no el
+            intermedio, que ya vive bajo `results/`.
         job_id: Identificador del trabajo; nombra la carpeta.
 
     Returns:
@@ -50,19 +52,6 @@ def results_directory_for(upload_path: Path, job_id: str) -> Path:
 
     return directory
 
-
-def stage_path(upload_path: Path, job_id: str, name: str) -> Path:
-    """Arma la ruta de un archivo intermedio de la cadena de saneamiento.
-
-    Args:
-        upload_path: Ruta del original recibido.
-        job_id: Identificador del trabajo.
-        name: Nombre del archivo intermedio.
-
-    Returns:
-        La ruta del archivo.
-    """
-    return results_directory_for(upload_path, job_id) / name
 
 
 def cover_faces_in(
@@ -158,14 +147,14 @@ def output_path_for(upload_path: Path, job_id: str, suffix: str) -> Path:
     """La ruta del resultado final de un trabajo: `out` más su extensión.
 
     Args:
-        upload_path: Ruta del original recibido.
+        upload_path: Ruta del original recibido, solo para deducir la raíz.
         job_id: Identificador del trabajo.
         suffix: Extensión del archivo, con el punto: '.jpg', '.webp'…
 
     Returns:
-        La ruta del archivo.
+        La ruta donde escribir el resultado, con su carpeta ya creada.
     """
-    return stage_path(upload_path, job_id, f"out{suffix}")
+    return results_directory_for(upload_path, job_id) / f"out{suffix}"
 
 
 @celery_app.task
@@ -321,7 +310,7 @@ def sanitize_strip(state: dict[str, Any]) -> dict[str, Any]:
         El estado con `path` apuntando al intermedio y el conteo de metadatos agregado.
     """
     original = Path(state["original_path"])
-    destination = stage_path(original, state["job_id"], "paso1_limpia.jpg")
+    destination = results_directory_for(original, state["job_id"]) / "paso1_limpia.jpg"
     state["result"] |= strip_metadata_in(Path(state["path"]), destination)
     state["path"] = str(destination)
 
@@ -339,7 +328,7 @@ def sanitize_cover(state: dict[str, Any]) -> dict[str, Any]:
         El estado con `path` apuntando al intermedio nuevo y el informe de caras.
     """
     original = Path(state["original_path"])
-    destination = stage_path(original, state["job_id"], "paso2_caras.jpg")
+    destination = results_directory_for(original, state["job_id"]) / "paso2_caras.jpg"
     state["result"] |= cover_faces_in(
         Path(state["path"]), destination, state["parameters"]
     )

@@ -64,13 +64,10 @@ class ResultsDirectory(unittest.TestCase):
             tasks.results_directory_for(self.upload_in(self.root), "abc"),
         )
 
-    def test_files_land_inside_that_directory(self) -> None:
+    def test_the_final_file_is_named_out(self) -> None:
+        """El nombre del resultado final se decide en un solo lugar."""
         upload = self.upload_in(self.root)
 
-        self.assertEqual(
-            tasks.stage_path(upload, "abc", "paso1_limpia.jpg"),
-            self.root / "results" / "abc" / "paso1_limpia.jpg",
-        )
         self.assertEqual(
             tasks.output_path_for(upload, "abc", ".webp"),
             self.root / "results" / "abc" / "out.webp",
