@@ -30,17 +30,14 @@ LISTEN_ON_ALL_INTERFACES = None
 # Raíz del repositorio.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Directorio raíz de los archivos.
-# Las rutas y las URLs admiten variable de entorno, que es como se configura un
-# contenedor: la imagen es siempre la misma y el entorno decide dónde está cada cosa. Sin
-# variable definida valen estos valores, que son los de desarrollo.
+# Directorio raíz de los archivos. Las rutas y las URLs admiten variable de entorno, que
+# es como se configura un contenedor: la imagen es siempre la misma y el entorno decide
+# dónde está cada cosa. Sin variable definida vale el valor de desarrollo.
+#
+# Tiene un solo lector: el valor por defecto de --storage-dir. De ahí en más la raíz viaja
+# en la ruta de cada imagen, y los workers derivan dónde escribir del original que reciben
+# en vez de consultar esto. Con una sola decisión no hay dos que puedan diferir.
 STORAGE_DIR = Path(os.environ.get("IMAGENES_STORAGE_DIR", PROJECT_ROOT / "storage"))
-
-# Originales, en un subdirectorio por trabajo.
-UPLOADS_DIR = STORAGE_DIR / "uploads"
-
-# Procesadas, en un subdirectorio por trabajo.
-RESULTS_DIR = STORAGE_DIR / "results"
 
 # ─────────────────────────── base de datos ───────────────────────────
 

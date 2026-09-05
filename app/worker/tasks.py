@@ -27,20 +27,42 @@ from app.worker.celery_app import celery_app
 GPS_TAG = 34853
 
 
-def stage_path(job_id: str, name: str) -> Path:
+def results_directory_for(upload_path: Path, job_id: str) -> Path:
+    """El directorio donde va lo que produce un trabajo, derivado de dónde llegó el original.
+
+    La raíz del almacenamiento la elige el servidor, y viaja en la ruta del original. El
+    worker la respeta en vez de volver a decidirla por su cuenta: con una sola decisión, el
+    original y el resultado no pueden terminar en árboles distintos.
+
+    Args:
+        upload_path: Ruta del ORIGINAL recibido. En la cadena de saneamiento hay que pasar
+            el original y no el intermedio, que ya vive bajo `results/`.
+        job_id: Identificador del trabajo; nombra la carpeta.
+
+    Returns:
+        La ruta, con la carpeta ya creada.
+    """
+    # El original está en <raíz>/uploads/<job_id>/<archivo>.
+    job_uploads = upload_path.parent
+    uploads_root = job_uploads.parent
+    directory = uploads_root.parent / "results" / job_id
+    directory.mkdir(parents=True, exist_ok=True)
+
+    return directory
+
+
+def stage_path(upload_path: Path, job_id: str, name: str) -> Path:
     """Arma la ruta de un archivo intermedio de la cadena de saneamiento.
 
     Args:
-        job_id: Identificador del trabajo; nombra su carpeta bajo `results/`.
+        upload_path: Ruta del original recibido.
+        job_id: Identificador del trabajo.
         name: Nombre del archivo intermedio.
 
     Returns:
-        La ruta, con su carpeta ya creada.
+        La ruta del archivo.
     """
-    directory = config.RESULTS_DIR / job_id
-    directory.mkdir(parents=True, exist_ok=True)
-
-    return directory / name
+    return results_directory_for(upload_path, job_id) / name
 
 
 def cover_faces_in(
@@ -132,14 +154,18 @@ def shrink_in(
     }
 
 
-def output_path_for(job_id: str, suffix: str) -> Path:
+def output_path_for(upload_path: Path, job_id: str, suffix: str) -> Path:
     """La ruta del resultado final de un trabajo: `out` más su extensión.
 
     Args:
+        upload_path: Ruta del original recibido.
         job_id: Identificador del trabajo.
         suffix: Extensión del archivo, con el punto: '.jpg', '.webp'…
+
+    Returns:
+        La ruta del archivo.
     """
-    return stage_path(job_id, f"out{suffix}")
+    return stage_path(upload_path, job_id, f"out{suffix}")
 
 
 @celery_app.task
@@ -187,7 +213,7 @@ def anonymize(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[
         `{"output_path": ..., "result": {"faces_detected": N, "mode": ...}}`.
     """
     source = Path(input_path)
-    destination = output_path_for(job_id, source.suffix.lower())
+    destination = output_path_for(source, job_id, source.suffix.lower())
 
     return {
         "output_path": str(destination),
@@ -208,7 +234,7 @@ def clean(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[str,
         `{"output_path": ..., "result": {"metadata_removed": N}}`.
     """
     source = Path(input_path)
-    destination = output_path_for(job_id, source.suffix.lower())
+    destination = output_path_for(source, job_id, source.suffix.lower())
 
     return {
         "output_path": str(destination),
@@ -231,7 +257,7 @@ def compress(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[s
         el porcentaje ahorrado.
     """
     source = Path(input_path)
-    destination = output_path_for(job_id, ".jpg")
+    destination = output_path_for(source, job_id, ".jpg")
 
     return {
         "output_path": str(destination),
@@ -261,7 +287,7 @@ def convert(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[st
             image = image.convert("RGB")  # JPEG no admite canal alfa
 
         suffix = ".jpg" if target == "jpeg" else f".{target}"
-        destination = output_path_for(job_id, suffix)
+        destination = output_path_for(Path(input_path), job_id, suffix)
         image.save(destination, target.upper(), quality=quality)
 
     return {"output_path": str(destination), "result": {"format": target}}
@@ -294,7 +320,8 @@ def sanitize_strip(state: dict[str, Any]) -> dict[str, Any]:
     Returns:
         El estado con `path` apuntando al intermedio y el conteo de metadatos agregado.
     """
-    destination = stage_path(state["job_id"], "paso1_limpia.jpg")
+    original = Path(state["original_path"])
+    destination = stage_path(original, state["job_id"], "paso1_limpia.jpg")
     state["result"] |= strip_metadata_in(Path(state["path"]), destination)
     state["path"] = str(destination)
 
@@ -311,7 +338,8 @@ def sanitize_cover(state: dict[str, Any]) -> dict[str, Any]:
     Returns:
         El estado con `path` apuntando al intermedio nuevo y el informe de caras.
     """
-    destination = stage_path(state["job_id"], "paso2_caras.jpg")
+    original = Path(state["original_path"])
+    destination = stage_path(original, state["job_id"], "paso2_caras.jpg")
     state["result"] |= cover_faces_in(
         Path(state["path"]), destination, state["parameters"]
     )
@@ -331,12 +359,13 @@ def sanitize_shrink(state: dict[str, Any]) -> dict[str, Any]:
         `{"output_path": ..., "result": {...}}`, la misma forma que devuelven las
         operaciones sueltas: el monitor no distingue de dónde vino.
     """
-    destination = output_path_for(state["job_id"], ".jpg")
+    original = Path(state["original_path"])
+    destination = output_path_for(original, state["job_id"], ".jpg")
     state["result"] |= shrink_in(
         Path(state["path"]),
         destination,
         state["parameters"],
-        measure_against=Path(state["original_path"]),
+        measure_against=original,
     )
 
     # Los pasos intermedios ya no sirven y ocupan el volumen compartido.
