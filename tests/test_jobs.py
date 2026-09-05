@@ -12,8 +12,23 @@ from pathlib import Path
 from unittest import mock
 
 from app.common import messages
+from app.server import ipc
 from app.server.main import jobs, registry
 from app.server.main.jobs import TaskQueue
+
+
+class RecordingIntake:
+    """Un canal que anota los eventos en vez de mandarlos a otro proceso.
+
+    Attributes:
+        events: Los eventos recibidos, en orden.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[ipc.JobEvent] = []
+
+    def record_event(self, event: ipc.JobEvent) -> None:
+        self.events.append(event)
 
 
 class MonitorTranslation(unittest.TestCase):
@@ -164,3 +179,56 @@ class ChainStateWalking(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventsToTheIntake(unittest.TestCase):
+    """Que cada cambio de estado se le informe al proceso que escribe la base.
+
+    Sin esto el índice en memoria queda al día y la base no, que es de donde venimos: la
+    deduplicación consulta la base y no encontraba nunca nada.
+    """
+
+    def setUp(self) -> None:
+        """Arma una cola con un canal que anota lo que recibe."""
+        self.registry = registry.JobRegistry()
+        self.job = registry.new_job("ana", "clean", {}, "foto.jpg")
+        self.registry.add(self.job)
+
+        self.intake = RecordingIntake()
+        self.queue = TaskQueue()
+        self.queue._registry = self.registry
+        self.queue._intake = self.intake
+        self.queue._handles[self.job.job_id] = object()
+
+    def test_the_transitions_are_reported(self) -> None:
+        self.queue._apply(self.job.job_id, "STARTED", None)
+        self.queue._apply(
+            self.job.job_id, "SUCCESS", {"output_path": "/vol/out.jpg", "result": {}}
+        )
+
+        self.assertEqual(
+            [event.kind for event in self.intake.events], [ipc.STARTED, ipc.DONE]
+        )
+        self.assertEqual(self.intake.events[-1].result_path, "/vol/out.jpg")
+
+    def test_a_failure_carries_the_reason(self) -> None:
+        self.queue._apply(self.job.job_id, "FAILURE", ValueError("imagen corrupta"))
+
+        event = self.intake.events[-1]
+        self.assertEqual(event.kind, ipc.FAILED)
+        self.assertIn("imagen corrupta", event.detail)
+
+    def test_a_repeated_state_is_not_reported_twice(self) -> None:
+        """El monitor consulta cada medio segundo: solo avisa cuando algo cambió."""
+        self.queue._apply(self.job.job_id, "STARTED", None)
+        self.queue._apply(self.job.job_id, "STARTED", None)
+
+        self.assertEqual(len(self.intake.events), 1)
+
+    def test_without_a_channel_the_monitor_still_works(self) -> None:
+        """Las pruebas que no necesitan el canal no deberían tener que armarlo."""
+        self.queue._intake = None
+
+        self.queue._apply(self.job.job_id, "STARTED", None)
+
+        self.assertEqual(self.job.status, messages.PROCESSING)

@@ -143,6 +143,33 @@ class IntakeChannel:
         finally:
             self._pending.pop(request.job_id, None)
 
+    def record_event(self, event: ipc.JobEvent) -> None:
+        """Manda un cambio de estado al ingreso. No espera respuesta ni la habrá.
+
+        No es una corrutina porque no espera nada: `send` deja el mensaje en el buffer del
+        sistema operativo y vuelve. Solo bloquearía con el buffer lleno, que necesitaría al
+        hijo detenido y cientos de eventos acumulados.
+
+        Un evento perdido no se reintenta. El trabajo sigue su curso igual y el cliente no
+        se entera: lo que se pierde es una fila en la base, y frenar el monitor por eso
+        sería peor que perderla.
+
+        Args:
+            event: El cambio de estado a guardar.
+        """
+        if self._connection is None:
+            logger.warning(
+                "sin canal de ingreso: se pierde el evento %s de %s", event.kind, event.job_id
+            )
+            return
+
+        try:
+            self._connection.send(event)
+        except OSError as failure:
+            logger.error(
+                "no se pudo enviar el evento %s de %s: %s", event.kind, event.job_id, failure
+            )
+
     async def stop(self) -> None:
         """Apaga el proceso de ingreso y cierra el canal.
 

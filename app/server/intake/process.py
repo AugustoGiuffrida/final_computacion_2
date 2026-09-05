@@ -86,6 +86,11 @@ def run_intake(connection: Connection, log_level: int, database_path: Path) -> N
                 logger.info("el proceso principal pidió terminar")
                 return
 
+            # Un evento se guarda y no se contesta: del otro lado no hay nadie esperando.
+            if isinstance(request, ipc.JobEvent):
+                records.record_event(request)
+                continue
+
             connection.send(review(request, records))
 
     finally:

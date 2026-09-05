@@ -35,6 +35,15 @@ UNAVAILABLE = "unavailable"
 SHUTDOWN = "shutdown"
 
 
+# ────────────────────────── clases de evento ──────────────────────────
+# Los cambios de estado que el monitor le manda al ingreso para que los guarde. El primer
+# evento de un trabajo, `queued`, no está acá: lo escribe el ingreso al registrarlo.
+
+STARTED = "started"
+DONE = "done"
+FAILED = "failed"
+
+
 # ────────────────────────── lo que viaja por el pipe ──────────────────────────
 
 
@@ -79,3 +88,25 @@ class ReviewResponse:
     content_hash: str | None = None
     detail: str | None = None
     original_job_id: str | None = None
+
+
+@dataclass
+class JobEvent:
+    """Un cambio de estado de un trabajo, para que el ingreso lo escriba en la base.
+
+    Se diferencia de `ReviewRequest` en que **no espera respuesta**: el monitor lo manda y
+    sigue. Si se perdiera, el trabajo termina bien igual —mientras el servidor viva manda
+    el índice en memoria—; lo que se pierde es el registro permanente.
+
+    Attributes:
+        job_id: El trabajo que cambió de estado.
+        kind: STARTED, DONE o FAILED.
+        detail: El motivo, solo cuando falló.
+        result_path: Dónde quedó el resultado, solo cuando terminó bien. Viaja como texto
+            porque es lo que guarda la base.
+    """
+
+    job_id: str
+    kind: str
+    detail: str | None = None
+    result_path: str | None = None

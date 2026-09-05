@@ -203,3 +203,109 @@ class WritingAndReading(DatabaseTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Events(DatabaseTestCase):
+    """El historial de cambios de estado y su efecto sobre la fila del trabajo.
+
+    Es lo que hace que la deduplicación llegue a dispararse: busca trabajos en `DONE`, y
+    sin estos eventos la base los veía siempre en `QUEUED`.
+    """
+
+    def kinds_of(self, job_id: str) -> list[str]:
+        """Los eventos de un trabajo, en orden.
+
+        Args:
+            job_id: El trabajo a consultar.
+
+        Returns:
+            La clase de cada evento, del más viejo al más nuevo.
+        """
+        rows = self.writer._connection.execute(
+            "SELECT kind FROM events WHERE job_id = ? ORDER BY id", (job_id,)
+        ).fetchall()
+
+        return [row[0] for row in rows]
+
+    def status_of(self, job_id: str) -> tuple:
+        """El estado guardado del trabajo.
+
+        Args:
+            job_id: El trabajo a consultar.
+
+        Returns:
+            `(status, error, result_path, finished_at)`.
+        """
+        return self.writer._connection.execute(
+            "SELECT status, error, result_path, finished_at FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+
+    def test_registering_a_job_writes_its_first_event(self) -> None:
+        self.writer.insert(self.a_request(), "abc123")
+
+        self.assertEqual(self.kinds_of("job-1"), ["queued"])
+
+    def test_the_full_history_is_kept(self) -> None:
+        """Los eventos se acumulan: la tabla es un historial, no un último valor."""
+        self.writer.insert(self.a_request(), "abc123")
+        self.writer.record_event(ipc.JobEvent("job-1", ipc.STARTED))
+        self.writer.record_event(
+            ipc.JobEvent("job-1", ipc.DONE, result_path="/vol/results/job-1/out.jpg")
+        )
+
+        self.assertEqual(self.kinds_of("job-1"), ["queued", "started", "done"])
+
+    def test_finishing_updates_the_job_row(self) -> None:
+        self.writer.insert(self.a_request(), "abc123")
+        self.writer.record_event(
+            ipc.JobEvent("job-1", ipc.DONE, result_path="/vol/results/job-1/out.jpg")
+        )
+
+        status, error, result_path, finished_at = self.status_of("job-1")
+        self.assertEqual(status, messages.DONE)
+        self.assertEqual(result_path, "/vol/results/job-1/out.jpg")
+        self.assertIsNone(error)
+        self.assertIsNotNone(finished_at)
+
+    def test_failing_records_the_reason(self) -> None:
+        self.writer.insert(self.a_request(), "abc123")
+        self.writer.record_event(
+            ipc.JobEvent("job-1", ipc.FAILED, detail="imagen corrupta")
+        )
+
+        status, error, _, finished_at = self.status_of("job-1")
+        self.assertEqual(status, messages.FAILED)
+        self.assertEqual(error, "imagen corrupta")
+        self.assertIsNotNone(finished_at)
+
+    def test_starting_does_not_erase_what_it_does_not_carry(self) -> None:
+        """Un evento intermedio no debe pisar los campos que no trae.
+
+        `started` no lleva `result_path` ni `finished_at`; sin los COALESCE los pondría en
+        NULL y se perdería el resultado de un trabajo ya terminado.
+        """
+        self.writer.insert(self.a_request(), "abc123")
+        self.writer.record_event(ipc.JobEvent("job-1", ipc.DONE, result_path="/vol/out.jpg"))
+        self.writer.record_event(ipc.JobEvent("job-1", ipc.STARTED))
+
+        _, _, result_path, finished_at = self.status_of("job-1")
+        self.assertEqual(result_path, "/vol/out.jpg")
+        self.assertIsNotNone(finished_at)
+
+    def test_a_finished_job_becomes_findable_as_a_duplicate(self) -> None:
+        """El motivo de todo esto, de punta a punta."""
+        request = self.a_request()
+        self.writer.insert(request, "abc123")
+
+        self.assertIsNone(
+            self.writer.find_duplicate("ana", "abc123", "anonymize", request.parameters),
+            "en QUEUED todavía no debe encontrarse",
+        )
+
+        self.writer.record_event(ipc.JobEvent("job-1", ipc.DONE, result_path="/vol/out.jpg"))
+
+        self.assertEqual(
+            self.writer.find_duplicate("ana", "abc123", "anonymize", request.parameters),
+            "job-1",
+        )

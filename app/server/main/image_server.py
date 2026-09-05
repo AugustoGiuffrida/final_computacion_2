@@ -147,7 +147,7 @@ class ImageServer:
         # Después de los sockets: si el puerto estaba ocupado, `start_server` ya falló y
         # no quedó ningún proceso hijo dando vueltas que haya que ir a matar.
         self.intake.start()
-        self.tasks.start(self.jobs)
+        self.tasks.start(self.jobs, self.intake)
 
     @property
     def listening_port(self) -> int:

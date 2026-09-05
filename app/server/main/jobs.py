@@ -30,7 +30,9 @@ from celery import chain
 from celery.result import AsyncResult
 
 from app.common import messages
+from app.server import ipc
 from app.server.main import registry
+from app.server.main.intake_channel import IntakeChannel
 from app.worker import tasks
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,7 @@ class TaskQueue:
         # backend por su estado. Se saca de acá cuando el trabajo termina, bien o mal.
         self._handles: dict[str, AsyncResult] = {}
         self._registry: registry.JobRegistry | None = None
+        self._intake: IntakeChannel | None = None
         self._monitor: asyncio.Task[None] | None = None
 
     @property
@@ -75,13 +78,18 @@ class TaskQueue:
         """Cuántos trabajos están bajo vigilancia en este momento."""
         return len(self._handles)
 
-    def start(self, jobs: registry.JobRegistry) -> None:
+    def start(
+        self, jobs: registry.JobRegistry, intake: IntakeChannel | None = None
+    ) -> None:
         """Arranca el monitor. Se llama una vez, desde dentro del event loop.
 
         Args:
             jobs: El índice en memoria que el monitor actualiza al detectar cambios.
+            intake: El canal por el que se le mandan los cambios al proceso que escribe la
+                base. Sin él el monitor funciona igual, actualizando solo la memoria.
         """
         self._registry = jobs
+        self._intake = intake
         self._monitor = asyncio.create_task(self._watch())
 
     async def stop(self) -> None:
@@ -185,6 +193,7 @@ class TaskQueue:
 
         if state == "STARTED" and job.status == messages.QUEUED:
             job.status = messages.PROCESSING
+            self._publish(ipc.JobEvent(job_id=job_id, kind=ipc.STARTED))
             logger.info("trabajo %s en proceso", job_id)
 
         elif state == "SUCCESS":
@@ -194,6 +203,13 @@ class TaskQueue:
             output = (payload or {}).get("output_path")
             job.output_path = Path(output) if output else None
             self._handles.pop(job_id, None)
+            self._publish(
+                ipc.JobEvent(
+                    job_id=job_id,
+                    kind=ipc.DONE,
+                    result_path=str(job.output_path) if job.output_path else None,
+                )
+            )
             logger.info("trabajo %s terminado", job_id)
 
         elif state == "FAILURE":
@@ -201,7 +217,17 @@ class TaskQueue:
             job.finished_at = datetime.now(timezone.utc)
             job.error = str(payload)  # la excepción que levantó la tarea
             self._handles.pop(job_id, None)
+            self._publish(ipc.JobEvent(job_id=job_id, kind=ipc.FAILED, detail=job.error))
             logger.warning("trabajo %s falló: %s", job_id, job.error)
+
+    def _publish(self, event: ipc.JobEvent) -> None:
+        """Le manda el cambio de estado al ingreso, si hay canal.
+
+        Args:
+            event: El cambio detectado.
+        """
+        if self._intake is not None:
+            self._intake.record_event(event)
 
 
 def has_started(handle: AsyncResult) -> bool:

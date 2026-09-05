@@ -24,6 +24,16 @@ from app.server import ipc
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
+# Qué estado del protocolo deja cada clase de evento en la fila del trabajo.
+STATUS_FOR_EVENT = {
+    ipc.STARTED: messages.PROCESSING,
+    ipc.DONE: messages.DONE,
+    ipc.FAILED: messages.FAILED,
+}
+
+# El primer evento de todo trabajo, que escribe `insert` junto con la fila.
+QUEUED_EVENT = "queued"
+
 
 def canonical_parameters(parameters: dict[str, Any]) -> str:
     """Convierte los parámetros a texto de una única forma posible.
@@ -86,23 +96,72 @@ class JobWriter:
         Es el momento en que pasa a existir de forma permanente: hasta acá solo vivía en
         el índice en memoria del servidor, que se pierde al reiniciar.
         """
-        self._connection.execute(
-            """
-            INSERT INTO jobs (id, user, op, params, sha256, filename, status, created_at)
-            VALUES (:id, :user, :op, :params, :sha256, :filename, :status, :created_at)
-            """,
-            {
-                "id": request.job_id,
-                "user": request.user,
-                "op": request.operation,
-                "params": canonical_parameters(request.parameters),
-                "sha256": content_hash,
-                "filename": request.stored_path.name,
-                "status": messages.QUEUED,
-                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            },
-        )
-        self._connection.commit()
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        # `with` sobre la conexión abre una transacción y confirma al salir; si algo
+        # levanta, deshace las dos escrituras. El trabajo y su primer evento entran juntos
+        # o no entra ninguno.
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO jobs (id, user, op, params, sha256, filename, status, created_at)
+                VALUES (:id, :user, :op, :params, :sha256, :filename, :status, :created_at)
+                """,
+                {
+                    "id": request.job_id,
+                    "user": request.user,
+                    "op": request.operation,
+                    "params": canonical_parameters(request.parameters),
+                    "sha256": content_hash,
+                    "filename": request.stored_path.name,
+                    "status": messages.QUEUED,
+                    "created_at": created_at,
+                },
+            )
+            self._connection.execute(
+                "INSERT INTO events (job_id, kind, ts, detail) VALUES (?, ?, ?, NULL)",
+                (request.job_id, QUEUED_EVENT, created_at),
+            )
+
+    def record_event(self, event: ipc.JobEvent) -> None:
+        """Guarda un cambio de estado y actualiza la fila del trabajo.
+
+        Las dos escrituras van en una sola transacción a propósito. `events` es el
+        historial y `jobs.status` el último valor: guardar el evento sin actualizar el
+        trabajo dejaría la búsqueda de duplicados sin encontrar nada, porque filtra por
+        `status = DONE`.
+
+        Args:
+            event: El cambio de estado que informó el monitor.
+        """
+        moment = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        terminal = event.kind in (ipc.DONE, ipc.FAILED)
+
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO events (job_id, kind, ts, detail) VALUES (?, ?, ?, ?)",
+                (event.job_id, event.kind, moment, event.detail),
+            )
+            # Los COALESCE evitan que un evento borre lo que no trae: `started` no lleva
+            # `result_path` y no debe pisar el que hubiera. El estado sí se escribe
+            # siempre, porque es lo que el evento viene a cambiar.
+            self._connection.execute(
+                """
+                UPDATE jobs
+                   SET status      = :status,
+                       error       = COALESCE(:error, error),
+                       result_path = COALESCE(:result_path, result_path),
+                       finished_at = COALESCE(:finished_at, finished_at)
+                 WHERE id = :id
+                """,
+                {
+                    "id": event.job_id,
+                    "status": STATUS_FOR_EVENT[event.kind],
+                    "error": event.detail if event.kind == ipc.FAILED else None,
+                    "result_path": event.result_path,
+                    "finished_at": moment if terminal else None,
+                },
+            )
 
     def close(self) -> None:
         """Cierra la base."""

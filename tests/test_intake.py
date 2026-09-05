@@ -22,6 +22,7 @@ from unittest import mock
 
 from PIL import Image
 
+from app.common import messages
 from app.server import database, ipc
 from app.server.intake import process
 from app.server.main import intake_channel
@@ -550,3 +551,71 @@ class RealChildWork(IntakeTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventsReachTheDatabase(IntakeTestCase):
+    """Un evento cruza al hijo de verdad y termina escrito en la base.
+
+    Es el recorrido completo del paso: se manda por el mismo pipe que las revisiones, lo
+    atiende el mismo bucle y lo escribe el mismo proceso, que es el único que puede.
+    """
+
+    async def a_real_channel(self, database_path: Path) -> IntakeChannel:
+        """Abre un canal con el proceso de ingreso de verdad.
+
+        Args:
+            database_path: Base temporal, para no tocar la del proyecto.
+
+        Returns:
+            El canal ya abierto, registrado para apagarse al terminar.
+        """
+        channel = IntakeChannel(
+            process.run_intake, database_path=database_path, log_level=logging.CRITICAL
+        )
+        channel.start()
+        self._channels.append(channel)
+        self.addAsyncCleanup(self._close_channels)
+
+        return channel
+
+    async def test_an_event_updates_the_job_row(self) -> None:
+        database_path = self.working_directory / "jobs.db"
+        channel = await self.a_real_channel(database_path)
+
+        verdict = await channel.review(self.a_request())
+        self.assertEqual(verdict.verdict, ipc.NEW)
+
+        channel.record_event(
+            ipc.JobEvent("job-1", ipc.DONE, result_path="/vol/results/job-1/out.jpg")
+        )
+        # El apagado es el punto de sincronización: el pipe conserva el orden, así que el
+        # hijo atiende el evento antes que el SHUTDOWN y termina de escribirlo.
+        await channel.stop()
+
+        reader = database.JobReader(database_path)
+        self.addCleanup(reader.close)
+        job = reader.find("job-1")
+
+        self.assertEqual(job["status"], messages.DONE)
+        self.assertEqual(job["result_path"], "/vol/results/job-1/out.jpg")
+
+    async def test_an_event_gets_no_answer(self) -> None:
+        """Nadie espera respuesta, así que el hijo no debe mandar ninguna.
+
+        Si contestara, el receptor del canal recibiría un mensaje que no es un veredicto y
+        lo descartaría con un registro de error.
+        """
+        channel = await self.a_real_channel(self.working_directory / "jobs.db")
+        await channel.review(self.a_request())
+
+        channel.record_event(ipc.JobEvent("job-1", ipc.STARTED))
+        await asyncio.sleep(0.2)
+
+        self.assertEqual(channel._pending, {})
+
+    def test_an_event_without_a_channel_is_only_logged(self) -> None:
+        """Perder un evento no debe romper al monitor que lo mandó."""
+        channel = IntakeChannel(log_level=logging.CRITICAL)
+
+        with self.assertLogs(level="WARNING"):
+            channel.record_event(ipc.JobEvent("job-1", ipc.STARTED))

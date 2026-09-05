@@ -94,7 +94,7 @@ class FakeTaskQueue:
         self.enqueued: list[tuple[Any, Path]] = []
         self.failure: Exception | None = None
 
-    def start(self, jobs: registry.JobRegistry) -> None:
+    def start(self, jobs: registry.JobRegistry, intake: Any = None) -> None:
         """No hace nada: no hay monitor que arrancar."""
 
     async def stop(self) -> None:
