@@ -151,6 +151,10 @@ diseño**, porque casi todo ya está resuelto y justificado ahí.
 | `docs/03_tecnologias.md` | qué es cada tecnología y por qué se eligió frente a alternativas |
 | `docs/04_protocolo.md` | especificación del protocolo cliente-servidor |
 | `docs/05_demostracion.md` | recorrido para mostrar el sistema funcionando, paso a paso |
+| `docs/06_chuleta.md` | las ideas del proyecto y sus llamadas, para la defensa |
+
+Y los cuatro que pide el enunciado, en la raíz: `INSTALL.md` (instalación), `README.md`
+(uso), `INFO.md` (decisiones de diseño y su justificación) y `TODO.md` (lo que queda).
 | `docs/img/arquitectura.svg` | diagrama, embebido en `02` |
 
 Separación entre documentos, respetada estrictamente: **`03`** explica tecnologías (qué es

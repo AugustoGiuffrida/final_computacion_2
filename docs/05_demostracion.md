@@ -3,8 +3,17 @@
 Recorrido corto para mostrar el sistema funcionando: **un solo envío de imagen**, siguiendo
 qué hace cada parte. Al final hay un apéndice con lo que se puede mostrar si hay preguntas.
 
-Hacen falta **dos terminales**: una con el servidor a la vista —su registro es la mitad de
-la demostración— y otra para los comandos. Todo se ejecuta desde la raíz del repositorio.
+Hacen falta **tres terminales**: una con el servidor a la vista —su registro es la mitad
+de la demostración—, otra con el worker y otra para los comandos.
+
+Todas desde la raíz del repositorio y **con el entorno virtual activado**:
+
+```bash
+cd final_computacion_2
+source venv/bin/activate
+```
+
+Se nota porque el prompt pasa a mostrar `(venv)` adelante.
 
 ---
 
@@ -54,7 +63,7 @@ Cuatro cosas, en orden. Todas se pueden repetir sin romper nada.
 **1. Las dependencias** (solo la primera vez, o si cambió `requirements.txt`):
 
 ```bash
-./venv/bin/pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 **2. Redis**, que es el intermediario entre el servidor y los workers:
@@ -110,13 +119,13 @@ Los comandos en orden, ya explicados en detalle en los pasos siguientes. Esta se
 está verificada de punta a punta:
 
 ```
-terminal 1   ./venv/bin/python -m app.server --port 9876
-terminal 2   ./venv/bin/celery -A app.worker.celery_app worker --loglevel=info
-terminal 3   ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+terminal 1   python -m app.server --port 9876
+terminal 2   celery -A app.worker.celery_app worker --loglevel=info
+terminal 3   python -m app.client --user ana --host 127.0.0.1 --port 9876 \
                  --action submit --file img_test/grupo.jpg --op sanitize \
                  --mode blur --quality 70 --max-size 900 --wait -o /tmp/saneada.jpg
 terminal 3   (verificar: el bloque de python del paso 3)
-terminal 3   ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 --action history
+terminal 3   python -m app.client --user ana --host 127.0.0.1 --port 9876 --action history
              Ctrl-C en la terminal 1 y en la 2
 ```
 
@@ -127,7 +136,7 @@ terminal 3   ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 
 En la **terminal 1**, el servidor:
 
 ```bash
-./venv/bin/python -m app.server --port 9876
+python -m app.server --port 9876
 ```
 
 | Parámetro | Qué hace |
@@ -139,7 +148,7 @@ En la **terminal 1**, el servidor:
 En la **terminal 2**, el worker:
 
 ```bash
-./venv/bin/celery -A app.worker.celery_app worker --loglevel=info
+celery -A app.worker.celery_app worker --loglevel=info
 ```
 
 | Parte | Qué hace |
@@ -208,7 +217,7 @@ cuenta para llevar la cuenta de los recursos compartidos.
 En la **terminal 3**:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action submit --file img_test/grupo.jpg --op sanitize --mode blur --quality 70 \
     --max-size 900 --wait -o /tmp/saneada.jpg
 ```
@@ -308,7 +317,7 @@ El `--wait` del paso 2 ya descargó el archivo. Vale la pena mirarlo, porque es 
 que el sistema hizo lo que promete:
 
 ```bash
-./venv/bin/python -c "
+python -c "
 from PIL import Image
 from pathlib import Path
 for nombre, ruta in [('enviado', 'img_test/grupo.jpg'), ('saneado', '/tmp/saneada.jpg')]:
@@ -328,7 +337,7 @@ etapas de la cadena: metadatos borrados, caras difuminadas, tamaño reducido.
 **El historial también lo refleja:**
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 --action history
+python -m app.client --user ana --host 127.0.0.1 --port 9876 --action history
 ```
 
 Los trabajos figuran `✓ DONE` con su hora de terminación, no `QUEUED` como antes de que
@@ -366,7 +375,7 @@ Cada punto es independiente y se muestra en menos de un minuto.
 
 ```bash
 for numero in 1 2 3 4 5 6; do
-    ./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    python -m app.client --user ana --host 127.0.0.1 --port 9876 \
         --action submit --file img_test/grupo.jpg --op clean &
 done
 ```
@@ -380,7 +389,7 @@ alternando entre corrutinas en cada `await`, sobre un solo hilo.
 El mismo comando cambiando la dirección:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host ::1 --port 9876 \
+python -m app.client --user ana --host ::1 --port 9876 \
     --action submit --file img_test/grupo.jpg --op clean
 ```
 
@@ -402,13 +411,13 @@ cuando exista— y reenviando `grupo_copia.jpg`, que es copia byte a byte de
 `grupo.jpg` con otro nombre:
 
 ```bash
-./venv/bin/python -c "
+python -c "
 import sqlite3
 base = sqlite3.connect('data/jobs.db')
 base.execute(\"UPDATE jobs SET status = 'DONE'\")
 base.commit()
 "
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action submit --file img_test/grupo_copia.jpg --op sanitize \
     --mode blur --quality 70 --max-size 900
 ```
@@ -435,7 +444,7 @@ No: los trabajos van a SQLite en el momento en que se aceptan.
 
 ```bash
 # apagar el servidor con Ctrl-C, volver a arrancarlo, y consultar un trabajo de antes
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action status --job-id EL-ID-DE-ANTES
 ```
 
@@ -455,7 +464,7 @@ mira el contenido es el proceso de ingreso:
 `img_test/rota.jpg` es `grupo.jpg` sin sus últimos cinco bytes:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action submit --file img_test/rota.jpg --op clean
 ```
 
@@ -484,7 +493,7 @@ demostración, porque mostrar que una imagen cualquiera lleva datos escondidos c
 más que explicarlo:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action submit --file img_test/grupo.jpg --op inspect --wait
 ```
 
@@ -507,7 +516,7 @@ serían las coordenadas de dónde se tomó.
 **`clean`** borra los metadatos y **no toca un solo píxel**:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action submit --file img_test/grupo.jpg --op clean --wait -o /tmp/limpia.jpg
 ```
 
@@ -517,7 +526,7 @@ La imagen sale idéntica y del mismo peso; lo único que cambió es lo que no se
 **`anonymize`** cubre las caras y nada más:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action submit --file img_test/grupo.jpg --op anonymize \
     --mode pixelate --strength 25 --wait -o /tmp/anonima.jpg
 ```
@@ -529,7 +538,7 @@ píxeles: el mismo valor tapa igual una foto de celular y una de cámara.
 **`compress`** achica el archivo, sin tocar caras ni metadatos:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action submit --file img_test/paisaje.jpg --op compress \
     --quality 60 --max-size 600 --wait -o /tmp/comprimida.jpg
 ```
@@ -550,7 +559,7 @@ De 752×600 a 600×479 y de 233 KB a 61 KB: un 74% menos.
 **`convert`** cambia el formato del archivo:
 
 ```bash
-./venv/bin/python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
     --action submit --file img_test/paisaje.jpg --op convert \
     --format webp --quality 85 --wait -o /tmp/convertida.webp
 ```
@@ -573,7 +582,7 @@ del usuario, no parte de "dejar esta foto lista para publicar".
 ### «¿Un usuario puede ver los trabajos de otro?»
 
 ```bash
-./venv/bin/python -m app.client --user otro --host 127.0.0.1 --port 9876 \
+python -m app.client --user otro --host 127.0.0.1 --port 9876 \
     --action status --job-id EL-ID-DE-ANA
 ```
 
@@ -591,7 +600,7 @@ Se responde el error y **la conexión sigue sirviendo**. El cliente valida antes
 así que hay que hablarle al servidor directamente:
 
 ```bash
-./venv/bin/python - <<'FIN'
+python - <<'FIN'
 import asyncio
 from app.common import protocol
 

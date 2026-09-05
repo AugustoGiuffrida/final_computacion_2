@@ -391,9 +391,10 @@ class ImageServer:
         revisa y devuelve su veredicto. Si la rechaza, el archivo se borra y el trabajo no
         se registra.
 
-        ESTADO: el trabajo queda en `QUEUED` y nada lo hace avanzar; falta la cola de
-        tareas. Y `deduplicated` es siempre falso: detectar repetidos necesita la base de
-        datos, que todavía no existe.
+        `deduplicated` solo puede ser verdadero cuando existe un trabajo anterior en
+        `DONE` con el mismo contenido, operación y parámetros. Como el monitor todavía no
+        persiste los cambios de estado, en la base todo figura `QUEUED` y en la práctica
+        la deduplicación no llega a dispararse.
 
         Args:
             header: Header del pedido.
@@ -508,9 +509,9 @@ class ImageServer:
         el primero le dice al cliente si tiene sentido pedir la descarga, el segundo trae
         los datos de la operación. Si falló, viaja el motivo en `error`.
 
-        ESTADO: hoy todos los trabajos quedan en `QUEUED`, porque nada los procesa. Las
-        ramas de terminado y fallado están implementadas y probadas para cuando exista la
-        cola de tareas.
+        El estado sale del índice en memoria, que el monitor de la cola mantiene al día:
+        `QUEUED` al aceptarlo, `PROCESSING` cuando un worker lo toma, y `DONE` o `ERROR`
+        al terminar.
 
         Args:
             header: Header del pedido.
@@ -561,9 +562,8 @@ class ImageServer:
         que haya producido un archivo, y que ese archivo siga estando. Cada uno da un
         error distinto, para que el cliente sepa qué pasó.
 
-        ESTADO: sin nada que procese los trabajos, ninguno llega a `DONE` y en uso normal
-        este pedido siempre responde `NOT_READY`. El camino completo está implementado y
-        se prueba inyectando un trabajo terminado en el registro.
+        Solo un trabajo en `DONE` tiene archivo para entregar: antes responde `NOT_READY`,
+        y si la operación no genera archivo —`inspect`— responde `NO_OUTPUT`.
 
         Args:
             header: Header del pedido.
