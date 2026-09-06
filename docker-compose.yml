@@ -66,10 +66,33 @@ services:
     restart: unless-stopped
 
 volumes:
-  # Las imágenes recibidas y sus resultados. En una sola máquina alcanza un volumen de
-  # Docker; para correr workers en OTRA máquina hay que reemplazarlo por un sistema de
-  # archivos de red — ver INSTALL.md.
+  # Las imágenes recibidas y sus resultados, sobre un sistema de archivos de red. Es lo
+  # que permite que los workers corran en otra máquina: por la cola viajan rutas, no
+  # imágenes, así que servidor y workers tienen que ver el mismo sistema de archivos.
+  #
+  # Las dos variables viven en `.env`, que no se versiona: son lo único que cambia de una
+  # máquina a otra. Sin ellas compose se niega a arrancar y dice cuál falta, que es mejor
+  # que montar en cualquier lado.
+  #
+  # Tres detalles medidos, que no conviene tocar:
+  #
+  #   - `addr` tiene que ser una IP. El montaje lo hace el demonio de Docker, que no está
+  #     en la red de compose y no resuelve nombres de servicio.
+  #   - Sin `nfsvers` usa NFSv3, que es lo que sirven tanto macOS como Linux. Solo hace
+  #     falta forzar `nfsvers=4` contra un servidor que no ofrezca v3 —el caso de los
+  #     servidores NFS en contenedor, que no traen el portmapper del puerto 111—.
+  #   - El servidor NFS tiene que estar levantado ANTES. El volumen se monta cuando el
+  #     contenedor se crea, y compose crea todos antes de arrancar ninguno: por eso un
+  #     servidor NFS dentro de este mismo compose nunca llegaría a tiempo.
   imagenes:
+    driver: local
+    driver_opts:
+      type: "nfs"
+      o: "addr=${NFS_SERVIDOR:?la IP del servidor NFS; ver INSTALL.md},rw,noatime,nolock"
+      device: ":${NFS_EXPORT:?el directorio exportado en el servidor NFS}"
 
-  # La base de datos, local al servidor.
+  # La base de datos, en disco local del servidor. NO va por NFS: SQLite desaconseja los
+  # sistemas de archivos de red —el bloqueo no es confiable y el modo WAL necesita memoria
+  # compartida entre procesos— y no lo necesita, porque solo la tocan el servidor y su
+  # proceso hijo, que viven siempre en la misma máquina.
   base:

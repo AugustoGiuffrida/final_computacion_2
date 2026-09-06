@@ -142,6 +142,7 @@ En lugar de instalar Python y las dependencias a mano, se puede levantar el sist
 completo con Docker. Redis, el servidor y los workers quedan aislados; **el cliente sigue
 corriendo fuera**, porque es de quien usa el servicio, no parte del despliegue.
 
+
 ```bash
 docker compose up -d
 ```
@@ -192,15 +193,19 @@ docker compose down -v     # además borra las imágenes guardadas y la base
 
 ### Dónde quedan los archivos en los contenedores
 
-Dentro de los contenedores, en dos volúmenes de Docker:
+Dentro de los contenedores, en dos volúmenes de naturaleza distinta:
 
-| Volumen | Montado en | Quién lo usa |
-|---|---|---|
-| `imagenes` | `/mnt/imagenes` | el servidor **y** los workers |
-| `base` | `/var/lib/final` | solo el servidor |
+| Volumen | Montado en | Qué es | Quién lo usa |
+|---|---|---|---|
+| `imagenes` | `/mnt/imagenes` | **NFS**, servido por otra máquina o por la misma | el servidor **y** los workers |
+| `base` | `/var/lib/final` | volumen local de Docker | solo el servidor |
 
-Que los workers **no** monten la base es deliberado: no la necesitan y no deben tocarla.
-La escribe únicamente el proceso de ingreso.
+Los dos son distintos a propósito. El compartido tiene que ser de red para que los workers
+puedan estar en otra máquina; la base **no puede** serlo, porque SQLite desaconseja los
+sistemas de archivos de red.
+
+Que los workers **no** monten la base también es deliberado: no la necesitan y no deben
+tocarla. La escribe únicamente el proceso de ingreso.
 
 Para inspeccionarlos:
 
@@ -209,37 +214,132 @@ docker compose exec servidor ls -R /mnt/imagenes
 docker compose exec servidor ls -l /var/lib/final
 ```
 
-### Workers en otra máquina
+### El sistema de archivos compartido
 
-El compose deja todo en una sola máquina, y para eso un volumen de Docker alcanza. Pero el
-diseño admite **workers en otras máquinas**: por la cola viajan rutas, no imágenes, así que
-lo único que hace falta es que todos vean el mismo sistema de archivos.
+El volumen de imágenes **es un sistema de archivos de red (NFS)**, no un volumen local de
+Docker. Es un requisito del diseño, no una optimización: por la cola viajan **rutas, no
+imágenes**, así que el servidor y los workers tienen que ver el mismo sistema de archivos.
+Mientras corran en la misma máquina un volumen local alcanzaría; en cuanto un worker se
+mude a otra, deja de alcanzar.
 
-Ahí el volumen compartido pasa a ser un **sistema de archivos de red**. En la máquina que
-corre los workers, el volumen se define apuntando al servidor NFS real:
+Hace falta entonces **una máquina que sirva el NFS**. Puede ser la misma que corre los
+contenedores o cualquier otra de la red.
 
-```yaml
-volumes:
-  imagenes:
-    driver: local
-    driver_opts:
-      type: "nfs"
-      o: "addr=192.168.1.100,rw,noatime,nolock,nfsvers=4"
-      device: ":/imagenes"
+#### Exportar el directorio en macOS
+
+"Exportar" es declarar que una carpeta queda disponible para que otras máquinas la monten
+por la red. La carpeta no se mueve ni se copia: sigue donde está, y quien la monta la ve
+como si fuera suya.
+
+```bash
+mkdir -p /Users/Shared/imagenes_compartidas
 ```
 
-Tres cosas que conviene saber, verificadas:
+```bash
+echo "/Users/Shared/imagenes_compartidas -mapall=$(id -u):$(id -g) -network 192.168.0.0 -mask 255.255.255.0" | sudo tee /etc/exports
+```
 
-- **`addr=` tiene que ser una IP**, no un nombre. El montaje lo hace el demonio de Docker,
-  que no está en la red de los contenedores y no resuelve sus nombres.
-- **`nfsvers=4` es necesario**; sin él el montaje falla con `operation not supported`.
-- **La base de datos no puede ir por NFS.** SQLite desaconseja los sistemas de archivos de
-  red —el bloqueo no es confiable y el modo WAL necesita memoria compartida entre
-  procesos— y no lo necesita: la escribe el proceso de ingreso y la lee el principal, que
-  viven siempre en la misma máquina. Por eso son dos volúmenes y no uno.
+```bash
+echo "nfs.server.mount.require_resv_port = 0" | sudo tee -a /etc/nfs.conf
+```
 
-Y `IMAGENES_BROKER_URL` tiene que apuntar al Redis de la máquina del servidor, no a un
-`redis` local.
+```bash
+sudo nfsd enable && sudo nfsd restart
+```
+
+| Parte | Qué hace |
+|---|---|
+| `-mapall=UID:GID` | todo lo que llegue por NFS se escribe como tu usuario. Sin esto macOS mapea el `root` del contenedor a `nobody` y las escrituras fallan |
+| `-network` y `-mask` | solo la red local puede montarlo. Ajustalo a tu rango |
+| `require_resv_port = 0` | macOS solo acepta montajes desde puertos <1024; el de Docker Desktop llega con uno alto porque pasa por traducción de red |
+
+Comprobar que quedó publicado:
+
+```bash
+showmount -e localhost
+```
+
+Tiene que listar la carpeta. **Si sale vacío, el export no se cargó** y de nada sirve seguir.
+
+**La carpeta no puede estar en `~/Documents`, `~/Desktop` ni `~/Downloads`.** macOS las
+protege —son `drwx------` y además están bajo el control de privacidad del sistema—, así
+que `nfsd` no puede leerlas: el export se ignora en silencio y `showmount` devuelve una
+lista vacía. Por eso `/Users/Shared`, que es `drwxrwxrwt`.
+
+**Y hay que reiniciar `nfsd` cada vez que se toca `/etc/exports`.** Si ya estaba corriendo,
+no relee el archivo solo.
+
+#### Exportar el directorio en Linux
+
+```bash
+sudo mkdir -p /srv/imagenes && sudo chown $(id -u):$(id -g) /srv/imagenes
+echo "/srv/imagenes 192.168.0.0/24(rw,sync,no_subtree_check,all_squash,anonuid=$(id -u),anongid=$(id -g))" | sudo tee /etc/exports
+sudo exportfs -ra && sudo systemctl enable --now nfs-server
+```
+
+#### Apuntar el proyecto al servidor
+
+Las dos únicas cosas que cambian de una máquina a otra viven en `.env`, que **no está
+versionado**:
+
+```bash
+cp .env.example .env
+```
+
+y adentro:
+
+```bash
+NFS_SERVIDOR=192.168.0.100
+NFS_EXPORT=/Users/augusto/Documents/imagenes_compartidas
+```
+
+**Cómo averiguar la IP.** Es la de la máquina que sirve el NFS, en la red local:
+
+```bash
+ipconfig getifaddr en0
+```
+
+En Linux, `hostname -I | awk '{print $1}'`.
+
+**No sirve `127.0.0.1`**, aunque el NFS lo sirva la misma máquina: el montaje lo hace el
+demonio de Docker, que en macOS corre dentro de una máquina virtual con su propio loopback.
+Si la IP la asigna el router por DHCP, puede cambiar al conectarse a otra red — y entonces
+hay que actualizar `.env`.
+
+Sin esas dos variables, `docker compose up` no arranca y dice cuál falta. Es deliberado:
+montar en un lugar equivocado sería peor que no arrancar.
+
+#### Sobre la versión de NFS
+
+El compose no fija `nfsvers`, así que se usa **NFSv3**, que es lo que sirven tanto macOS
+como Linux. Está medido: contra el `nfsd` de macOS, forzar `nfsvers=4` hace que el montaje
+**se cuelgue sin dar error** —su servidor v4 necesita configurarle una raíz aparte—,
+mientras que v3 funciona directo.
+
+`nfsvers=4` solo hace falta contra un servidor que no ofrezca v3, que es el caso de los
+servidores NFS empaquetados en contenedor: no traen el portmapper del puerto 111 y el
+montaje falla con `connection refused`.
+
+#### Presentar el proyecto en otra computadora
+
+El `docker-compose.yml` es **idéntico en todas las máquinas**. Mudarse son tres pasos, y
+ninguno toca el código:
+
+1. Exportar un directorio en la máquina que vaya a servir el NFS, con los comandos de
+   arriba según su sistema.
+2. `cp .env.example .env` y poner ahí la IP y el directorio nuevos.
+3. `docker compose up -d`.
+
+Los workers pueden correr en una máquina y el NFS en otra: es justamente para eso. Lo único
+que **no** puede mudarse es la base de datos, que va en disco local del servidor.
+
+#### Si no tenés permisos de administrador
+
+Montar un servidor NFS necesita `sudo`. Si la máquina donde vas a presentar no te lo
+permite, la salida es dejar el NFS en una máquina tuya de la misma red y apuntar `.env`
+ahí: los contenedores corren donde sea y montan por la red, que es el escenario real del
+sistema.
+
 
 ## Apagar
 

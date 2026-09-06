@@ -8,6 +8,9 @@ storage/uploads/*
 storage/results/*
 !storage/uploads/.gitkeep
 !storage/results/.gitkeep
+
+.env
+
 __pycache__/
 *.pyc
 venv/
