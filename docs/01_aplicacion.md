@@ -41,7 +41,7 @@ cientos de bytes y llegan en la respuesta de `status`, sin necesidad de descarga
 
 | Operación   | Parámetros                                   | Archivo de salida        | Datos que devuelve |
 |-------------|----------------------------------------------|--------------------------|--------------------|
-| `inspect`   | —                                            | **ninguno**              | Auditoría de privacidad completa: caras detectadas, GPS presente (y dónde apunta), fecha, cámara y número de serie, peso |
+| `inspect`   | —                                            | **ninguno**              | Auditoría de privacidad: coordenadas GPS, fecha de captura, cámara, número de serie, caras detectadas, peso y formato |
 | `anonymize` | `mode` (`blur`/`pixelate`/`box`), `strength` | imagen con caras cubiertas | cuántas caras detectó |
 | `clean`     | —                                            | imagen sin metadatos     | qué metadatos eliminó |
 | `convert`   | `format` (`webp`/`jpeg`/`png`), `quality`    | imagen en el nuevo formato | formato origen y destino, tamaño final |

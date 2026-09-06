@@ -253,6 +253,9 @@ def inspect(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[st
             "size": list(image.size),
             "mode": image.mode,
             "metadata_entries": len(metadata),
+            # El nombre importa: el cliente muestra en KB o MB los campos que se llaman
+            # así, sin que esta tarea sepa nada de cómo se ve.
+            "bytes": source.stat().st_size,
         }
         report |= privacy_report(metadata)
 

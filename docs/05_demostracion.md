@@ -214,11 +214,53 @@ cuenta para llevar la cuenta de los recursos compartidos.
 
 ## Paso 2 — Enviar la imagen
 
-En la **terminal 3**:
+### Primero: qué revela una foto
+
+Antes de sanear nada conviene mostrar **por qué hace falta**. En la **terminal 3**:
 
 ```bash
 python -m app.client --user ana --host 127.0.0.1 --port 9876 \
-    --action submit --file img_test/grupo.jpg --op sanitize --mode blur --quality 70 \
+    --action submit --file img_test/con_metadatos.jpg --op inspect --wait
+```
+
+```
+╭─────────────────────── Resultado ────────────────────────╮
+│           Format  JPEG                                   │
+│             Size  1280, 1024                             │
+│             Mode  RGB                                    │
+│ Metadata entries  7                                      │
+│           Tamaño  312.8 KB                               │
+│  Coordenadas GPS  -32.889458, -68.845839  (dato privado) │
+│ Fecha de captura  2024:03:15 14:32:07  (dato privado)    │
+│           Cámara  Apple iPhone 13  (dato privado)        │
+│  Número de serie  F2LW48ZBQ1GH  (dato privado)           │
+│ Caras detectadas  12                                     │
+╰──────────────────────────────────────────────────────────╯
+
+Esta operación no genera archivo: su resultado es el informe de arriba.
+```
+
+Esas coordenadas son la Plaza Independencia de Mendoza. La foto no las muestra: **las
+lleva escritas adentro**, junto con el día y la hora en que se sacó, el modelo del teléfono
+y su número de serie. Cualquiera que reciba el archivo puede leerlo con dos líneas de
+código.
+
+Tres cosas para señalar acá:
+
+- **`inspect` es la única operación que no genera archivo.** Su resultado son los datos, y
+  viajan en la respuesta de estado: unos pocos cientos de bytes, sin descargar nada.
+- **Los cuatro campos marcados como privados** son los que la aplicación existe para
+  encontrar. El cliente los resalta por eso, no por decoración.
+- **Las 12 caras** no salen de los metadatos: las encuentra el detector, que es la otra
+  mitad de lo que hay que anonimizar.
+
+### Después: sanearla
+
+Con eso a la vista, el saneamiento se explica solo:
+
+```bash
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file img_test/con_metadatos.jpg --op sanitize --mode blur --quality 70 \
     --max-size 900 --wait -o /tmp/saneada.jpg
 ```
 
@@ -239,15 +281,15 @@ python -m app.client --user ana --host 127.0.0.1 --port 9876 \
 │   Trabajo  cf4739e2-d3aa-4fa7-b930-68d7b88bd3f1 │
 │    Estado  ◷ QUEUED                             │
 │ Operación  sanitize                             │
-│    Imagen  grupo.jpg (312.2 KB)               │
+│    Imagen  con_metadatos.jpg (312.8 KB)         │
 ╰─────────────────────────────────────────────────╯
 
 ╭──────── Resultado ─────────╮
-│ Metadata removed  2        │
+│ Metadata removed  7        │
 │ Caras detectadas  12       │
 │             Mode  blur     │
-│  Tamaño original  312.2 KB │
-│     Tamaño final  78.3 KB  │
+│  Tamaño original  312.8 KB │
+│     Tamaño final  78.2 KB  │
 │    Saved percent  75       │
 ╰────────────────────────────╯
 
@@ -313,26 +355,41 @@ es adivinable ni enumerable.
 
 ## Paso 3 — Verificar el resultado
 
-El `--wait` del paso 2 ya descargó el archivo. Vale la pena mirarlo, porque es donde se ve
-que el sistema hizo lo que promete:
+El `--wait` del paso 2 ya descargó el archivo. La mejor forma de verificarlo es **con la
+propia aplicación**: se le pide una auditoría al resultado, igual que en la apertura.
 
 ```bash
-python -c "
-from PIL import Image
-from pathlib import Path
-for nombre, ruta in [('enviado', 'img_test/grupo.jpg'), ('saneado', '/tmp/saneada.jpg')]:
-    with Image.open(ruta) as imagen:
-        print(f'  {nombre:<9} {len(imagen.getexif())} metadatos   {imagen.size}   {Path(ruta).stat().st_size // 1024} KB')
-"
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file /tmp/saneada.jpg --op inspect --wait
 ```
 
 ```
-  enviado   2 metadatos   (1600, 1600)   499 KB
-  saneado   0 metadatos   (900, 900)      70 KB
+╭──────── Resultado ─────────╮
+│           Format  JPEG     │
+│             Size  900, 720 │
+│             Mode  RGB      │
+│ Metadata entries  0        │
+│           Tamaño  78.2 KB  │
+│ Caras detectadas  1        │
+╰────────────────────────────╯
 ```
 
-Y abriendo las dos imágenes se ve la cara cubierta. Esas tres diferencias son las tres
-etapas de la cadena: metadatos borrados, caras difuminadas, tamaño reducido.
+Puesto al lado de la apertura, ahí está todo lo que hizo el sistema:
+
+| | Antes | Después |
+|---|---|---|
+| Metadatos | 7 | **0** |
+| Coordenadas GPS | -32.889458, -68.845839 | **no hay** |
+| Fecha, cámara, número de serie | los tres | **ninguno** |
+| Tamaño | 1280×1024, 312.8 KB | 900×720, 78.2 KB |
+| Caras detectables | 12 | **1** |
+
+Las tres etapas de la cadena, medidas por la misma herramienta que las expuso.
+
+**Y una honestidad sobre la última fila**: queda una cara detectable, no cero. El
+difuminado no borra la cara, la vuelve irreconocible; el detector sigue viendo una forma de
+cara en once de doce casos y en el que queda todavía la registra. Anonimizar no es hacer
+desaparecer, y conviene decirlo antes de que lo pregunten.
 
 **El historial también lo refleja:**
 

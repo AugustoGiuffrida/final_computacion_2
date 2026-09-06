@@ -65,7 +65,7 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
    `faces.py` (detección con cascadas Haar de OpenCV 4).
 7. `app/server/main/jobs.py` — el puente con la cola: encolar y el monitor que traduce
    los estados de Celery a los del protocolo.
-8. `tests/` — 201 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
+8. `tests/` — 212 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
    workers reales.
 9. `Dockerfile`, `.dockerignore` y `docker-compose.yml` — el despliegue: una sola imagen
    para el servidor y los workers, y Redis al lado. Documentado en `INSTALL.md`.
@@ -94,7 +94,7 @@ Operaciones definidas (v1):
 
 | Operación | Archivo de salida | Datos que devuelve |
 |---|---|---|
-| `inspect` | **ninguno** | auditoría de privacidad: caras, GPS, fecha, cámara |
+| `inspect` | **ninguno** | auditoría de privacidad: GPS, fecha, cámara, número de serie y caras |
 | `anonymize` | imagen con caras cubiertas | cuántas caras detectó |
 | `clean` | imagen sin metadatos | qué metadatos eliminó |
 | `convert` | imagen en otro formato | formato origen y destino |
