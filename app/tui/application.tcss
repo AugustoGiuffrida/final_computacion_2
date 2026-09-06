@@ -26,3 +26,21 @@
     padding: 1;
     color: $text-muted;
 }
+
+.field {
+    padding: 1 0 0 0;
+    color: $text-muted;
+}
+
+#parameters {
+    height: auto;
+}
+
+#send {
+    margin: 1 0;
+    width: 100%;
+}
+
+#upload {
+    margin: 1 0;
+}
