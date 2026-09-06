@@ -191,7 +191,9 @@ async def send_file(
 
     framed_header = pack_header(header_with_size)
     writer.write(framed_header)
-    await writer.drain() #Consulta el tamaño de esa lista.
+    # Espera a que el buffer de salida se descargue antes de arrancar con los bloques.
+    # Cada bloque tiene después su propio drain, dentro del bucle.
+    await writer.drain()
 
     sent_bytes = 0
     for chunk in read_in_chunks(file_path):

@@ -49,16 +49,11 @@ class DatabaseTestCase(unittest.TestCase):
     def a_finished_job(self, request: ipc.ReviewRequest, content_hash: str) -> None:
         """Inserta un trabajo y lo marca como terminado.
 
-        Hace falta porque la deduplicación solo reutiliza trabajos en `DONE`, y todavía no
-        existe nada que lleve un trabajo hasta ahí: eso son los workers.
+        La deduplicación solo reutiliza trabajos en `DONE`, así que hay que llevarlo hasta
+        ahí: en producción lo hace el evento que manda el monitor de la cola.
         """
         self.writer.insert(request, content_hash)
-        connection = sqlite3.connect(self.database_path)
-        connection.execute(
-            "UPDATE jobs SET status = ? WHERE id = ?", (messages.DONE, request.job_id)
-        )
-        connection.commit()
-        connection.close()
+        self.writer.record_event(ipc.JobEvent(request.job_id, ipc.DONE))
 
 
 # ──────────────────────── la forma canónica de los parámetros ────────────────────────

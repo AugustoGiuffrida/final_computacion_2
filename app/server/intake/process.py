@@ -10,8 +10,9 @@ nativo; ante una imagen preparada para eso, la falla no llega como una excepció
 sino como la muerte del intérprete. Siendo un proceso aparte, muere este y el principal
 sigue atendiendo a todos sus clientes.
 
-ESTADO: verifica la imagen, calcula su hash, busca duplicados y registra el trabajo.
-Falta persistir los eventos del ciclo de vida, que necesitan que exista quien los produzca.
+Es además el único que escribe en la base: verifica la imagen, calcula su hash, busca
+duplicados, registra el trabajo y guarda los eventos de su ciclo de vida que le manda el
+proceso principal.
 """
 
 from __future__ import annotations

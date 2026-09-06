@@ -15,11 +15,6 @@ De eso se derivan las dos reglas que este módulo respeta:
 
 Acá vive la clase y nada más: la validación de lo que llega está en `incoming.py` y el
 armado de lo que sale en `outgoing.py`.
-
-ESTADO: el proceso principal está completo. Acepta conexiones, respeta el framing y
-resuelve los cuatro pedidos del protocolo contra un índice en memoria. Lo que falta —el
-proceso de ingreso, la cola de tareas, la base de datos— está diseñado en `docs/` y
-pendiente de aprobación.
 """
 
 from __future__ import annotations
@@ -50,10 +45,8 @@ logger = logging.getLogger(__name__)
 class ImageServer:
     """Servidor TCP que atiende pedidos del protocolo de la aplicación.
 
-    Se instancia con la configuración, se arranca con `start` y se detiene con `stop`.
-    La configuración se guarda en la instancia porque `asyncio.start_server` solo le pasa
-    al handler el reader y el writer de la conexión: cualquier otro dato tiene que llegarle
-    por acá.
+    La configuración vive en la instancia porque `asyncio.start_server` solo le pasa al
+    handler el reader y el writer: cualquier otro dato tiene que llegarle por acá.
 
     Attributes:
         host: Dirección en la que escucha. `None` significa todas las interfaces
@@ -79,16 +72,12 @@ class ImageServer:
         """Prepara el servidor sin abrir todavía el socket de escucha.
 
         Args:
-            host: Dirección de escucha, o None para todas las interfaces.
-            port: Puerto de escucha.
-            storage_dir: Raíz de los archivos de imagen. Es el volumen compartido: los
-                workers tienen que ver el mismo contenido, así que en el despliegue es un
-                sistema de archivos de red.
-            database_path: Dónde vive la base. Va aparte del volumen compartido, en disco
-                local: SQLite no debe estar sobre un sistema de archivos de red.
-            intake: El canal con el proceso de ingreso. Se puede pasar uno con un hijo
-                falso para que las pruebas no lancen un proceso de verdad en cada una.
-            task_queue: La cola de tareas. Las pruebas pasan una falsa que no toca Redis.
+            host: None significa todas las interfaces.
+            storage_dir: El volumen compartido, que los workers también ven.
+            database_path: Va aparte del volumen: SQLite no debe estar sobre red.
+            intake: Las pruebas pasan uno con un hijo falso, para no lanzar un proceso
+                de verdad en cada una.
+            task_queue: Las pruebas pasan una falsa, que no toca Redis.
         """
         self.host = host
         self.port = port
@@ -116,17 +105,9 @@ class ImageServer:
     async def start(self) -> None:
         """Abre los sockets de escucha y empieza a aceptar conexiones.
 
-        `asyncio.start_server` hace por debajo la secuencia completa de un servidor TCP
-        —crear el socket, ajustar sus opciones, reclamar la dirección con `bind`, ponerlo
-        en modo pasivo con `listen`— y deja corriendo el bucle de `accept` dentro del
-        event loop. Por cada conexión aceptada crea una tarea nueva que ejecuta
-        `handle_client`.
-
-        Sin un host concreto abre **un socket por familia**, IPv4 e IPv6, sobre el mismo
-        puerto. Con una dirección concreta abre solo el de la familia que corresponda.
-
-        Returns:
-            None. Al volver, el servidor ya está aceptando conexiones.
+        `asyncio.start_server` hace la secuencia completa —socket, `bind`, `listen`— y deja
+        el bucle de `accept` corriendo en el event loop, creando una tarea por conexión.
+        Sin un host concreto abre **un socket por familia**, IPv4 e IPv6, en el mismo puerto.
 
         Raises:
             OSError: Si el puerto está ocupado o la dirección no está disponible.
@@ -155,9 +136,6 @@ class ImageServer:
 
         Hace falta cuando se arranca con el puerto 0, que le pide al sistema operativo
         que elija uno libre: recién después de abrir el socket se sabe cuál fue.
-
-        Returns:
-            El puerto del primer socket de escucha.
 
         Raises:
             RuntimeError: Si todavía no se llamó a `start`.
@@ -190,11 +168,7 @@ class ImageServer:
         """Mantiene el servidor en funcionamiento hasta que se pida detenerlo.
 
         Args:
-            stop_requested: Evento que alguien más activa para pedir el apagado. Lo
-                activa el manejador de señales de `main`.
-
-        Returns:
-            None. Vuelve cuando el servidor ya se detuvo por completo.
+            stop_requested: Lo activa el manejador de señales de `main`.
         """
         await self.start()
         await stop_requested.wait()
@@ -214,12 +188,6 @@ class ImageServer:
         —es la forma normal de terminar— y se detecta porque `receive_header` levanta
         `IncompleteReadError` al encontrarse la conexión vacía.
 
-        Args:
-            reader: Stream de lectura de esta conexión.
-            writer: Stream de escritura de esta conexión.
-
-        Returns:
-            None. Al volver, la conexión quedó cerrada.
         """
         address = format_address(writer.get_extra_info("peername"))
         self.connected_clients += 1
@@ -248,13 +216,6 @@ class ImageServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         """Lee y atiende pedidos uno por uno, hasta que el cliente cierre.
-
-        Args:
-            reader: Stream de lectura de esta conexión.
-            writer: Stream de escritura de esta conexión.
-
-        Returns:
-            None. Vuelve cuando el cliente cerró la conexión.
 
         Raises:
             asyncio.IncompleteReadError: Cuando el cliente cierra. Es la salida normal.
@@ -290,19 +251,9 @@ class ImageServer:
     ) -> None:
         """Deriva el pedido al manejador que corresponda según su tipo.
 
-        Distingue dos rechazos que son cosas distintas: un tipo que **no existe** en el
-        protocolo es `BAD_REQUEST`, y uno que existe pero **todavía no está implementado**
-        es `INTERNAL`.
-
         Los pedidos que no llegan a un manejador consumen su payload acá antes de
         rechazarse. Los que sí llegan lo consumen ellos: `submit` necesita leerlo, no
         descartarlo.
-
-        Args:
-            header: Header del pedido, ya deserializado.
-            payload_size: Bytes de payload que siguen al header, según lo declarado.
-            reader: Stream de lectura, para consumir el payload.
-            writer: Stream de escritura, para responder.
 
         Raises:
             TooLarge: Si el payload anunciado supera el máximo aceptado.
@@ -340,20 +291,13 @@ class ImageServer:
     ) -> None:
         """Responde los últimos trabajos del usuario, del más reciente al más antiguo.
 
-        Los trabajos salen del registro en memoria, así que solo aparecen los aceptados
-        desde que el servidor arrancó. En el diseño completo, los anteriores salen de
-        SQLite.
+        Los trabajos salen del registro, que junta la memoria de esta ejecución con lo que
+        quedó en la base de las anteriores.
 
         El payload se consume **antes** de validar: si la validación fallara primero, esos
         bytes quedarían en el socket y el mensaje siguiente los tomaría como su prefijo de
         longitud. La regla vale para los cuatro manejadores: consumir primero, validar
         después.
-
-        Args:
-            header: Header del pedido.
-            payload_size: Bytes de payload declarados. `history` no lleva ninguno.
-            reader: Stream de lectura, para consumir el payload.
-            writer: Stream de escritura, para responder.
 
         Raises:
             BadRequest: Si falta el usuario o el límite no es un entero positivo.
@@ -391,16 +335,8 @@ class ImageServer:
         revisa y devuelve su veredicto. Si la rechaza, el archivo se borra y el trabajo no
         se registra.
 
-        `deduplicated` solo puede ser verdadero cuando existe un trabajo anterior en
-        `DONE` con el mismo contenido, operación y parámetros. Como el monitor todavía no
-        persiste los cambios de estado, en la base todo figura `QUEUED` y en la práctica
-        la deduplicación no llega a dispararse.
-
-        Args:
-            header: Header del pedido.
-            payload_size: Bytes de la imagen que siguen al header.
-            reader: Stream de lectura, para recibir la imagen.
-            writer: Stream de escritura, para responder.
+        `deduplicated` es verdadero cuando ya existe un trabajo en `DONE` con el mismo
+        contenido, operación y parámetros: entonces se devuelve aquel y no se procesa nada.
 
         Raises:
             RequestError: Si el pedido es inválido en cualquiera de sus campos; la
@@ -513,12 +449,6 @@ class ImageServer:
         `QUEUED` al aceptarlo, `PROCESSING` cuando un worker lo toma, y `DONE` o `ERROR`
         al terminar.
 
-        Args:
-            header: Header del pedido.
-            payload_size: Bytes de payload declarados. `status` no lleva ninguno.
-            reader: Stream de lectura, para consumir el payload.
-            writer: Stream de escritura, para responder.
-
         Raises:
             BadRequest: Si falta algún campo obligatorio.
             JobNotFound: Si no existe un trabajo con ese identificador.
@@ -564,12 +494,6 @@ class ImageServer:
 
         Solo un trabajo en `DONE` tiene archivo para entregar: antes responde `NOT_READY`,
         y si la operación no genera archivo —`inspect`— responde `NO_OUTPUT`.
-
-        Args:
-            header: Header del pedido.
-            payload_size: Bytes de payload declarados. `download` no lleva ninguno.
-            reader: Stream de lectura, para consumir el payload.
-            writer: Stream de escritura, para responder y enviar el archivo.
 
         Raises:
             JobNotFound: Si no existe un trabajo con ese identificador.
@@ -643,8 +567,7 @@ def format_address(address: object) -> str:
             elementos en IPv4 y de cuatro en IPv6.
 
     Returns:
-        La dirección como `host:puerto`, o su representación textual si no tiene esa
-        forma.
+        `host:puerto`, o su representación textual si no tiene esa forma.
     """
     if isinstance(address, tuple) and len(address) >= 2:
         return f"{address[0]}:{address[1]}"

@@ -1,13 +1,12 @@
 """Catálogo del protocolo de aplicación: qué mensajes existen y qué responde cada uno.
 
-ESTADO: pendiente de aprobación del profesor. Vive en un módulo propio, separado del
-framing de `protocol.py`, precisamente para que pueda cambiar entero sin arrastrar al
-resto del código. `protocol.py` resuelve cómo se delimita un mensaje sobre TCP y no sabe
+Vive en un módulo propio, separado del framing de `protocol.py`, precisamente para que
+pueda cambiar entero sin arrastrar al resto del código. `protocol.py` resuelve cómo se delimita un mensaje sobre TCP y no sabe
 nada de esta aplicación; este módulo define qué dicen esos mensajes. El framing es el
 sobre, este módulo es el idioma de la carta.
 
 Acá solo hay nombres y constantes, no lógica. El cliente los usa para armar sus pedidos e
-interpretar las respuestas; el servidor los usará para lo simétrico. Tener un único lugar
+interpretar las respuestas; el servidor los usa para lo simétrico. Tener un único lugar
 donde están escritos evita que una cadena mal tipeada en un extremo se descubra recién en
 tiempo de ejecución.
 

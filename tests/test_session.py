@@ -1,7 +1,8 @@
 """Pruebas de la capa de red del cliente.
 
-El servidor real todavía no está escrito, así que cada prueba levanta un servidor de
-mentira que habla el protocolo y responde lo que la prueba necesita. No es una simulación
+Cada prueba levanta un servidor de mentira que habla el protocolo y responde lo que ella
+necesita: acá se prueba el cliente, y con el servidor real no se podrían provocar a
+voluntad los casos raros —una respuesta cortada, un nombre de archivo malicioso—. No es una simulación
 de los objetos: los mensajes viajan de verdad por un socket TCP sobre localhost, igual que
 en `test_protocol.py`. Lo único fingido es qué contesta del otro lado.
 """
