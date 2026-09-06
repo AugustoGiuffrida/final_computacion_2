@@ -9,6 +9,7 @@ que la demostración no dependa de generar nada en el momento.
 | `grupo_copia.jpg` | copia byte a byte del anterior | la deduplicación: mismo contenido, otro nombre |
 | `paisaje.jpg` | un paisaje, sin personas | que no haya caras es un resultado válido |
 | `rota.jpg` | `grupo.jpg` sin sus últimos 5 bytes | el rechazo por imagen corrupta |
+| `grupo_grande.jpg` | el mismo grupo, ampliado a 5120×4096 (1.8 MB) | medir el paralelismo de los workers |
 
 `rota.jpg` es la más interesante: con cinco bytes de menos, la verificación de estructura
 la da por buena y solo la decodificación de píxeles la descubre. Por eso el proceso de
@@ -22,6 +23,12 @@ ingreso abre cada imagen **dos veces**.
   anonimización se ve mucho mejor el detector encontrando doce caras y cubriéndolas todas.
 - **`paisaje.jpg`**: *La noche estrellada* de Van Gogh, dominio público. Viene con los
   ejemplos de OpenCV.
+- **`grupo_grande.jpg`**: `grupo.jpg` ampliado cuatro veces, conservando sus metadatos.
+  Existe por una razón medida: con la imagen chica, ocho trabajos tardan lo mismo con uno
+  que con seis procesos de worker —el costo está en arrancar Python en cada cliente, no en
+  procesar—, así que el paralelismo no se puede mostrar. Con esta, los mismos ocho trabajos
+  pasan de 14 a 5 segundos. No es más grande por capricho: es el tamaño que hace visible lo
+  que se quiere demostrar.
 - Los 2 metadatos EXIF de `grupo.jpg` se agregaron a propósito —marca de cámara y
   software de edición— porque son los que una cámara real deja escritos, y borrarlos es
   una de las tres cosas que hace `sanitize`.

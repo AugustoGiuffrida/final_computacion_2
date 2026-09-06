@@ -345,6 +345,124 @@ existieran los workers.
 
 ---
 
+## Mostrar la concurrencia
+
+El trabajo es de concurrencia, así que hay que mostrarla y no afirmarla. Son dos cosas
+distintas y se demuestran distinto:
+
+| Qué | Cómo se ve |
+|---|---|
+| El **servidor** atiende a varios clientes a la vez | su registro: los pedidos aparecen intercalados |
+| Los **workers** procesan en paralelo | el tiempo total baja al agregar procesos |
+
+### Con varias terminales: para mostrar
+
+Una terminal por cliente, además de las del servidor y el worker:
+
+```
+terminal 1   servidor        ← dejarla a la vista: su registro es la prueba
+terminal 2   worker
+terminal 3   cliente ana
+terminal 4   cliente beto
+terminal 5   cliente caro
+```
+
+En cada terminal de cliente, con **su propio usuario** y **su propio archivo de salida**:
+
+```bash
+python -m app.client --user ana --host 127.0.0.1 --port 9876 \
+    --action submit --file img_test/grupo.jpg --op sanitize --wait -o /tmp/ana.jpg
+```
+
+Lanzándolas casi a la vez se ven las tres barras de progreso avanzando al mismo tiempo, y
+en la terminal del servidor los tres pedidos entran intercalados **dentro del mismo
+segundo**, atendidos por un solo hilo:
+
+```
+11:43:31  INFO  trabajo 9fa5a1ea... aceptado: 'sanitize' sobre 'grupo.jpg'
+11:43:31  INFO  trabajo b136e540... aceptado: 'sanitize' sobre 'grupo.jpg'
+11:43:32  INFO  trabajo 5405ea2d... aceptado: 'sanitize' sobre 'grupo.jpg'
+```
+
+### Con un bucle: para medir
+
+Lo que la mano no alcanza a hacer es lanzar ocho clientes en el mismo instante y cronometrar.
+Para eso, en una terminal aparte:
+
+```bash
+inicio=$(date +%s)
+pids=()
+for numero in 1 2 3 4 5 6 7 8; do
+  python -m app.client --user cliente$numero --host 127.0.0.1 --port 9876 \
+      --action submit --file img_test/grupo_grande.jpg --op sanitize \
+      --wait --timeout 120 -o /tmp/resultado$numero.jpg >/tmp/cliente$numero.log 2>&1 &
+  pids+=($!)
+done
+wait ${pids[@]}
+echo "tiempo total: $(( $(date +%s) - inicio )) s"
+```
+
+| Parte | Qué hace |
+|---|---|
+| `&` al final | manda el cliente al fondo y sigue con el siguiente, sin esperarlo |
+| `pids+=($!)` | guarda el número de proceso del cliente recién lanzado |
+| `wait ${pids[@]}` | espera **solo a esos ocho**, no a todo lo que haya en el fondo |
+| `>/tmp/...log` | separa la salida de cada uno; sin esto se mezclan y no se lee nada |
+| `--timeout 120` | con un solo proceso de worker, el último de la fila tarda |
+
+Ahora la comparación. El worker se arranca fijando cuántos procesos usa:
+
+```bash
+celery -A app.worker.celery_app worker --concurrency=1 --loglevel=info
+```
+
+Se corre el bucle, se frena el worker, se lo vuelve a arrancar con `--concurrency=4` y se
+corre de nuevo **cambiando los nombres de usuario** (ver más abajo por qué):
+
+| 8 clientes · `grupo_grande.jpg` (5120×4096) | Tiempo |
+|---|---|
+| `--concurrency=1` | **14–15 s** |
+| `--concurrency=4` | **5–6 s** |
+
+(Dos corridas de cada una, en una máquina de 12 núcleos. Los valores exactos dependen de la
+máquina; lo que se sostiene es la proporción.)
+
+Casi tres veces más rápido, y **el servidor no se tocó**: los workers van a buscar trabajo
+a Redis, así que agregar procesos no le pide permiso a nadie.
+
+### Cuatro cosas que arruinan la demostración
+
+Las cuatro salieron probando esto, no de la teoría.
+
+**1. `wait` sin argumentos cuelga la terminal.** Espera a *todos* los trabajos en segundo
+plano, y si el servidor o el worker se lanzaron desde esa misma terminal, nunca terminan.
+Por eso el bucle guarda los PID.
+
+**2. Sin `-o`, los ocho clientes escriben el mismo archivo.** Todos usan el nombre que
+sugiere el servidor y se pisan entre sí en el directorio actual.
+
+**3. La segunda corrida vuelve instantánea.** Es la deduplicación: los mismos usuarios ya
+procesaron esa misma imagen con esa misma operación, así que el servidor devuelve el
+resultado anterior sin trabajar. Sale 0 segundos y parece que no pasó nada. Para repetir hay
+que cambiar los usuarios, cambiar un parámetro (`--quality`) o borrar `data/jobs.db`.
+
+**4. Con `img_test/grupo.jpg` el tiempo no mide nada.** Está medido: ocho trabajos tardan lo
+mismo con uno que con seis procesos, porque el costo está en arrancar Python en cada cliente
+y en el intervalo de consulta de medio segundo, no en procesar. Por eso la medición usa
+`grupo_grande.jpg`.
+
+### Un detalle que conviene saber antes de que lo pregunten
+
+**Un `celery worker` no es un proceso.** Por defecto arranca uno por núcleo —en una máquina
+de 12 núcleos, doce—, así que sin fijar `--concurrency` la comparación no significa nada:
+ya había paralelismo de sobra. Lo mismo vale para `docker compose up -d --scale worker=3`,
+que da tres **contenedores**, cada uno con sus propios procesos.
+
+Y la deduplicación **no colapsa envíos simultáneos**: si los ocho llegan a la vez, los ocho
+se procesan. Busca trabajos terminados, y cuando llegan juntos ninguno terminó todavía.
+
+---
+
 ## Paso 4 — Apagar
 
 En la **terminal 1**, `Ctrl-C`.
