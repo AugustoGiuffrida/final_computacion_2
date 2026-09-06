@@ -80,6 +80,20 @@ lo es**, a propósito:
   servidor  ──── /var/lib/final   (local)   jobs.db
 ```
 
+**Cómo se concreta.** El servidor NFS es una máquina cualquiera de la red que exporta un
+directorio; puede ser la misma que corre los contenedores o no. El compose no lo levanta:
+lo consume, declarando el volumen con el driver `local` en modo `nfs`, y su dirección es lo
+único que cambia de una máquina a otra —vive en `.env`, fuera del control de versiones—.
+
+Que el servidor NFS quede **afuera** del compose no es comodidad, es necesidad: el volumen
+se monta cuando el contenedor se **crea**, y Compose crea todos los contenedores antes de
+arrancar ninguno. Un servidor NFS declarado como servicio del mismo compose nunca llegaría
+a estar escuchando a tiempo para sus vecinos, ni siquiera con `depends_on`.
+
+Se usa **NFSv3**, que es lo que sirven tanto macOS como Linux sin configuración adicional.
+Los pasos de instalación y los tropiezos concretos —qué carpetas no se pueden exportar, por
+qué hace falta permitir puertos de origen no reservados— están en `INSTALL.md`.
+
 ### 3.1 El IPC en detalle: un pipe y una correlación
 
 El servidor y el proceso de ingreso se comunican con **un `multiprocessing.Pipe`**, que
@@ -438,9 +452,12 @@ la usa para servir la descarga, pero al responder una consulta de estado la desc
 solo informa si hay archivo disponible.
 
 **Condición que esto impone**: la ruta solo sirve si ambos lados ven el mismo sistema de
-archivos, y por eso el volumen está montado en el servidor y en los workers. Es el
-límite de escalabilidad conocido del diseño: para distribuir workers en máquinas sin ese
-volumen habría que usar almacenamiento en red (NFS) o de objetos (S3).
+archivos, y es exactamente por eso que el volumen es NFS y no un volumen local — así un
+worker puede estar en otra máquina y la ruta sigue significando lo mismo.
+
+El límite que queda: todos los workers tienen que poder montar ese export. Para repartirlos
+por redes distintas habría que pasar a almacenamiento de objetos (S3), donde en vez de una
+ruta viajaría un identificador.
 
 ## 7. Modelo de datos (SQLite)
 
