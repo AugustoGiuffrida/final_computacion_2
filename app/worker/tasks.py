@@ -26,6 +26,20 @@ from app.worker.celery_app import celery_app
 # El tag GPSInfo del estándar EXIF: si está presente, la foto dice dónde se tomó.
 GPS_TAG = 34853
 
+# Los metadatos que la auditoría busca por nombre. Son los que revelan algo de quien sacó
+# la foto —dónde, cuándo y con qué—, a diferencia del resto, que describe el archivo.
+CAMERA_MAKE_TAG = 271
+CAMERA_MODEL_TAG = 272
+TAKEN_AT_TAG = 36867
+FALLBACK_DATE_TAG = 306
+SERIAL_NUMBER_TAG = 42033
+
+# Dentro del bloque GPS, cada coordenada viene con su hemisferio aparte.
+GPS_LATITUDE = 2
+GPS_LATITUDE_REF = 1
+GPS_LONGITUDE = 4
+GPS_LONGITUDE_REF = 3
+
 
 def results_directory_for(upload_path: Path, job_id: str) -> Path:
     """El directorio donde va lo que produce un trabajo, derivado de dónde llegó el original.
@@ -157,6 +171,64 @@ def output_path_for(upload_path: Path, job_id: str, suffix: str) -> Path:
     return results_directory_for(upload_path, job_id) / f"out{suffix}"
 
 
+def degrees_from(coordinate: tuple, hemisphere: str) -> float:
+    """Convierte una coordenada EXIF a grados decimales.
+
+    EXIF las guarda como tres números —grados, minutos, segundos— y el hemisferio aparte,
+    en una letra. Un mapa espera un solo número con signo.
+
+    Args:
+        coordinate: Los tres valores que devuelve EXIF.
+        hemisphere: 'N', 'S', 'E' u 'O'; los dos últimos van en negativo.
+
+    Returns:
+        La coordenada en grados decimales.
+    """
+    degrees, minutes, seconds = (float(parte) for parte in coordinate)
+    decimal = degrees + minutes / 60 + seconds / 3600
+
+    return -decimal if hemisphere in ("S", "W") else decimal
+
+
+def privacy_report(metadata) -> dict[str, Any]:
+    """Extrae de los metadatos lo que revela algo de quien sacó la foto.
+
+    Los campos que no estén se omiten en lugar de figurar vacíos: una foto sin GPS no
+    debería mostrar una fila de coordenadas en blanco, sino no mostrarla.
+
+    Args:
+        metadata: Lo que devuelve `Image.getexif()`.
+
+    Returns:
+        Solo los campos presentes, entre `gps`, `taken_at`, `camera` y `serial_number`.
+    """
+    report: dict[str, Any] = {}
+
+    gps = metadata.get_ifd(GPS_TAG)
+    if gps and GPS_LATITUDE in gps and GPS_LONGITUDE in gps:
+        report["gps"] = [
+            round(degrees_from(gps[GPS_LATITUDE], gps.get(GPS_LATITUDE_REF, "N")), 6),
+            round(degrees_from(gps[GPS_LONGITUDE], gps.get(GPS_LONGITUDE_REF, "E")), 6),
+        ]
+
+    taken_at = metadata.get(TAKEN_AT_TAG) or metadata.get(FALLBACK_DATE_TAG)
+    if taken_at:
+        report["taken_at"] = str(taken_at).strip()
+
+    camera = " ".join(
+        str(metadata[tag]).strip()
+        for tag in (CAMERA_MAKE_TAG, CAMERA_MODEL_TAG)
+        if metadata.get(tag)
+    )
+    if camera:
+        report["camera"] = camera
+
+    if metadata.get(SERIAL_NUMBER_TAG):
+        report["serial_number"] = str(metadata[SERIAL_NUMBER_TAG]).strip()
+
+    return report
+
+
 @celery_app.task
 def inspect(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[str, Any]:
     """Audita qué revela la imagen, sin modificarla. Es la única sin archivo de salida.
@@ -168,18 +240,24 @@ def inspect(job_id: str, input_path: str, parameters: dict[str, Any]) -> dict[st
         parameters: No usa ninguno; está por la firma común.
 
     Returns:
-        `{"result": {...}}` con formato, dimensiones, modo de color, cuántas entradas
-        de metadatos tiene y si contiene coordenadas GPS.
+        `{"result": {...}}` con lo que describe al archivo —formato, dimensiones, modo de
+        color, cuántos metadatos tiene— y lo que revela de quien la sacó: coordenadas,
+        fecha, cámara y cuántas caras se ven. Lo segundo es el punto de la operación.
     """
-    with Image.open(input_path) as image:
+    source = Path(input_path)
+
+    with Image.open(source) as image:
         metadata = image.getexif()
-        report = {
+        report: dict[str, Any] = {
             "format": image.format,
             "size": list(image.size),
             "mode": image.mode,
             "metadata_entries": len(metadata),
-            "has_gps": GPS_TAG in metadata,
         }
+        report |= privacy_report(metadata)
+
+    # La detección va fuera del `with`: abre la imagen por su cuenta, con OpenCV.
+    report["faces_detected"] = len(faces.detect(source))
 
     return {"result": report}
 

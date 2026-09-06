@@ -26,6 +26,7 @@ from textual.widgets import (
     RadioButton,
     RadioSet,
     Select,
+    Static,
 )
 
 from app.client import formatting, session
@@ -94,6 +95,7 @@ class ImagesApp(App):
         directory: Raíz del árbol de imágenes.
         downloads: Dónde se guardan los resultados descargados.
         selected: La imagen elegida, o None si todavía no se eligió ninguna.
+        detailed: El trabajo cuyo resultado se está mostrando.
     """
 
     CSS_PATH = "application.tcss"
@@ -120,6 +122,7 @@ class ImagesApp(App):
         self.downloads = downloads
         self.selected: Path | None = None
         self.operation: str | None = None
+        self.detailed: str | None = None
         self._session: session.ClientSession | None = None
 
     def compose(self) -> ComposeResult:
@@ -153,6 +156,10 @@ class ImagesApp(App):
             with Vertical(id="jobs"):
                 yield Label("Trabajos", classes="title")
                 yield DataTable(id="table", cursor_type="row")
+                yield Label("Resultado", classes="title")
+                # Lo que produjo el trabajo señalado. Para `inspect` es todo el sentido de
+                # la operación: el informe ES el resultado, no hay archivo que descargar.
+                yield Static(id="result")
 
         yield Footer()
 
@@ -248,7 +255,11 @@ class ImagesApp(App):
             campo = self.query_one(f"#param-{name}")
             crudo = campo.value
 
-            if crudo in (None, "", Select.BLANK):
+            # Un campo sin completar se omite, y el servidor aplica su valor por defecto.
+            # Se comprueba que sea texto con contenido en vez de compararlo contra el
+            # centinela de `Select`: ese centinela cambió de forma entre versiones de
+            # Textual, y compararlo mal hacía que se enviara al servidor.
+            if not isinstance(crudo, str) or not crudo.strip():
                 continue
 
             validador = PARAMETER_VALIDATORS.get(name)
@@ -357,6 +368,59 @@ class ImagesApp(App):
 
         if 0 <= cursor < table.row_count:
             table.move_cursor(row=cursor)
+
+        await self.refresh_result()
+
+    async def on_data_table_row_highlighted(
+        self, event: DataTable.RowHighlighted
+    ) -> None:
+        """Cambia el trabajo del que se muestra el resultado.
+
+        Args:
+            event: Lo que emite la tabla al moverse el cursor de fila.
+        """
+        if event.row_key is not None:
+            self.detailed = str(event.row_key.value)
+            await self.refresh_result()
+
+    async def refresh_result(self) -> None:
+        """Pide el estado del trabajo señalado y muestra lo que produjo.
+
+        Se consulta cada vez, y no se guarda de la vez anterior, porque un trabajo en curso
+        va cambiando: su resultado aparece recién cuando termina.
+
+        Los campos que revelan información privada se resaltan, con el mismo criterio que
+        el cliente de terminal: son el punto de la aplicación, no un dato más.
+        """
+        panel = self.query_one("#result", Static)
+
+        if self._session is None or not self._session.is_connected or self.detailed is None:
+            panel.update("")
+            return
+
+        try:
+            estado = await self._session.status(self.detailed)
+        except (messages.ServerError, OSError):
+            panel.update("")
+            return
+
+        if estado.get("status") == messages.FAILED:
+            panel.update(f"[red]{estado.get('error', 'el trabajo falló')}[/red]")
+            return
+
+        resultado = estado.get("result") or {}
+        if not resultado:
+            panel.update("[dim]todavía sin resultado[/dim]")
+            return
+
+        renglones = []
+        for campo, valor in resultado.items():
+            texto = formatting.format_result_value(campo, valor)
+            if formatting.is_privacy_sensitive(campo, valor):
+                texto = f"[bold yellow]{texto}[/bold yellow] [dim](dato privado)[/dim]"
+            renglones.append(f"[dim]{formatting.result_label(campo)}:[/dim] {texto}")
+
+        panel.update("\n".join(renglones))
 
     async def action_download(self) -> None:
         """Descarga el resultado del trabajo señalado en la tabla.
