@@ -108,9 +108,10 @@ python -m app.tui --user ana
 
 ```
 ┌─ Imágenes ────────┬─ Operación ───────────┬─ Trabajos ──────────────┐
-│ 📁 img_test/      │  ( ) anonymize        │ ✓ DONE   sanitize       │
-│   grupo.jpg       │  ( ) clean            │ ◐ PROC   anonymize      │
-│   paisaje.jpg     │  (•) sanitize         │ ◷ QUEUED clean          │
+│ [img_test______]  │  ( ) anonymize        │ ✓ DONE   sanitize       │
+│ 📁 img_test/      │  ( ) clean            │ ◐ PROC   anonymize      │
+│   grupo.jpg       │  (•) sanitize         │ ◷ QUEUED clean          │
+│   paisaje.jpg     │                       │                         │
 │                   │                       ├─ Resultado ─────────────┤
 │                   │  Cómo cubrir  [blur▾] │ Caras detectadas: 12    │
 │                   │  Calidad      [70   ] │ Tamaño final: 169.7 KB  │
@@ -122,6 +123,7 @@ python -m app.tui --user ana
 |---|---|
 | flechas | moverse dentro del panel |
 | `Enter` | en el árbol, elegir la imagen; en la lista, la operación |
+| `Enter` en el campo de arriba | cambiar de carpeta: se escribe la ruta, y `~` vale |
 | `Tab` | pasar al panel siguiente |
 | `Enter` sobre una fila de trabajos | descargar su resultado |
 | `d` | lo mismo, salvo mientras se escribe en un campo |
@@ -135,7 +137,7 @@ acá igual, y se lo ve pasar de `QUEUED` a `PROCESSING` a `DONE`.
 |---|---|
 | `--user` | con qué nombre presentarse (obligatorio) |
 | `--host` `--port` | dónde está el servidor |
-| `--dir` | dónde arranca el árbol de imágenes |
+| `--dir` | con qué carpeta arranca el árbol; después se cambia desde la pantalla |
 | `--out` | dónde guardar lo que se descargue |
 
 Los parámetros de cada operación **no** van por la línea de comandos: se eligen en la
@@ -183,5 +185,5 @@ volumen de imágenes.
 python -m unittest discover -s tests -t .
 ```
 
-212 pruebas. Levantan servidores reales en puertos libres, lanzan procesos hijos de verdad
+216 pruebas. Levantan servidores reales en puertos libres, lanzan procesos hijos de verdad
 y usan bases SQLite temporales. No necesitan Redis: la cola se sustituye por un doble.

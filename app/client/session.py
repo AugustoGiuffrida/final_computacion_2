@@ -94,6 +94,13 @@ class ClientSession:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
+        # Un pedido por vez sobre esta conexión. El protocolo es un diálogo estricto —se
+        # manda uno y se lee su respuesta— así que dos pedidos superpuestos se llevarían
+        # la respuesta del otro. El cliente de terminal nunca lo intenta; una interfaz que
+        # refresca sola mientras el usuario opera, sí. El candado hace que no dependa de
+        # que quien la use se acuerde.
+        self._one_at_a_time = asyncio.Lock()
+
     # ─────────────────────── ciclo de vida de la conexión ───────────────────────
 
     async def connect(self) -> None:
@@ -175,8 +182,11 @@ class ClientSession:
             "filename": image_path.name,
         }
 
-        await protocol.send_file(self._require_writer(), request, image_path, on_progress)
-        return await self._receive_response()
+        async with self._one_at_a_time:
+            await protocol.send_file(
+                self._require_writer(), request, image_path, on_progress
+            )
+            return await self._receive_response()
 
     async def status(self, job_id: str) -> dict[str, Any]:
         """Consulta el estado de un trabajo y, si terminó, los datos que produjo.
@@ -244,6 +254,30 @@ class ClientSession:
             "job_id": job_id,
         }
 
+        async with self._one_at_a_time:
+            return await self._download(request, job_id, destination, on_progress)
+
+    async def _download(
+        self,
+        request: dict[str, Any],
+        job_id: str,
+        destination: Path | None,
+        on_progress: protocol.ProgressCallback | None,
+    ) -> tuple[Path, dict[str, Any]]:
+        """El cuerpo de `download`, ya con la conexión reservada.
+
+        Está aparte para que el pedido, su respuesta y la recepción del archivo queden
+        dentro del mismo bloque del candado sin anidarlo tres niveles.
+
+        Args:
+            request: El pedido ya armado.
+            job_id: Identificador del trabajo, para el nombre por defecto.
+            destination: Dónde guardarlo, o None para usar el nombre sugerido.
+            on_progress: Se llama con los bytes recibidos y el total.
+
+        Returns:
+            La ruta donde quedó el archivo y el header de la respuesta.
+        """
         await protocol.send_message(self._require_writer(), request)
 
         response = await self._receive_response()
@@ -319,8 +353,9 @@ class ClientSession:
         Es el camino de `status` y `history`. El `submit` no lo usa porque manda un
         archivo, y el `download` tampoco porque recibe uno.
         """
-        await protocol.send_message(self._require_writer(), header)
-        return await self._receive_response()
+        async with self._one_at_a_time:
+            await protocol.send_message(self._require_writer(), header)
+            return await self._receive_response()
 
     async def _receive_response(self) -> dict[str, Any]:
         """Lee el header de la respuesta y lo verifica.

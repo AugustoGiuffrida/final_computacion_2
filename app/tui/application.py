@@ -10,6 +10,7 @@ terminal. Lo único propio de este módulo es cómo se acomoda la pantalla.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -36,6 +37,13 @@ from app.common import config, messages
 # Cada cuánto se vuelve a pedir el historial. Es lo que hace que un trabajo en curso se vea
 # avanzar: el estado lo informa el servidor, el cliente no adivina nada.
 REFRESH_INTERVAL_SECONDS = 1.0
+
+# La operación con la que arranca la pantalla. Que haya una elegida evita que el área de
+# parámetros aparezca vacía y el botón quede flotando lejos, sin nada en el medio.
+DEFAULT_OPERATION = "sanitize"
+
+NOTHING_CHOSEN = "[dim]ninguna imagen elegida[/dim]"
+NO_RESULT_YET = "[dim]elegí un trabajo de la lista[/dim]"
 
 # Las extensiones que el servidor acepta, para no mostrar archivos que va a rechazar.
 VISIBLE_SUFFIXES = frozenset(config.SUPPORTED_EXTENSIONS)
@@ -136,38 +144,64 @@ class ImagesApp(App):
 
         with Horizontal():
             with Vertical(id="images"):
-                yield Label("Imágenes", classes="title")
+                yield Label("Carpeta", classes="field")
+                # Escribir una carpeta y confirmar cambia la raíz del árbol. Sin esto solo
+                # se podría bajar desde la carpeta de arranque, nunca salir de ella.
+                yield Input(
+                    value=str(self.directory), id="root", placeholder="ruta; ~ vale"
+                )
                 yield ImageTree(self.directory, id="tree")
 
             with Vertical(id="operation"):
-                yield Label("Operación", classes="title")
                 # Las operaciones salen del catálogo: agregar una al servidor la hace
                 # aparecer acá sin tocar esta pantalla.
                 yield RadioSet(
                     *(RadioButton(name) for name in sorted(config.OPERATION_PARAMETERS)),
                     id="operations",
                 )
-                yield Label("", id="chosen")
+                yield Label(NOTHING_CHOSEN, id="chosen")
                 # Se llena y se vacía según la operación elegida: cada una tiene los suyos.
                 yield Vertical(id="parameters")
                 yield ProgressBar(id="upload", show_eta=False)
                 yield Button("Enviar", id="send", variant="primary")
 
             with Vertical(id="jobs"):
-                yield Label("Trabajos", classes="title")
                 yield DataTable(id="table", cursor_type="row")
-                yield Label("Resultado", classes="title")
-                # Lo que produjo el trabajo señalado. Para `inspect` es todo el sentido de
-                # la operación: el informe ES el resultado, no hay archivo que descargar.
-                yield Static(id="result")
+                with Vertical(id="result-panel"):
+                    # Lo que produjo el trabajo señalado. Para `inspect` es todo el sentido
+                    # de la operación: el informe ES el resultado, no hay archivo.
+                    yield Static(NO_RESULT_YET, id="result")
 
         yield Footer()
 
     async def on_mount(self) -> None:
         """Abre la conexión, prepara la tabla y arranca el refresco periódico."""
+        # Los títulos van en el borde del panel, no en una fila aparte: se lee como un
+        # panel y no gasta una línea de alto en cada columna.
+        for identificador, titulo in [
+            ("#images", " Imágenes "),
+            ("#operation", " Operación "),
+            ("#jobs", " Trabajos "),
+            ("#result-panel", " Resultado "),
+        ]:
+            self.query_one(identificador).border_title = titulo
+
         table = self.query_one("#table", DataTable)
-        table.add_columns("Estado", "Operación", "Archivo", "Enviado")
+        table.add_column("Estado", width=12)
+        table.add_column("Operación", width=10)
+        table.add_column("Archivo", width=24)
+        table.add_column("Enviado", width=16)
+
         self.query_one("#upload", ProgressBar).display = False
+
+        # Arrancar con una operación elegida y sus parámetros a la vista.
+        operaciones = self.query_one("#operations", RadioSet)
+        for boton in operaciones.query(RadioButton):
+            if str(boton.label) == DEFAULT_OPERATION:
+                boton.value = True
+                break
+
+        self.update_send_button()
 
         self._session = session.ClientSession(self.host, self.port, self.user)
         try:
@@ -194,10 +228,68 @@ class ImagesApp(App):
             event: Lo que emite el árbol al elegir un archivo.
         """
         self.selected = event.path
+        self.update_send_button()
         self.query_one("#chosen", Label).update(
             f"Elegida: [bold]{event.path.name}[/bold] "
             f"({formatting.format_size(event.path.stat().st_size)})"
         )
+
+    def update_send_button(self) -> None:
+        """Apaga el botón mientras falte algo, y dice qué falta.
+
+        Es preferible a dejarlo encendido y contestar con un error después de apretarlo:
+        el estado de la pantalla ya sabe si se puede enviar, así que conviene mostrarlo.
+        """
+        boton = self.query_one("#send", Button)
+
+        if self.selected is None:
+            boton.label = "Elegí una imagen"
+        elif self.operation is None:
+            boton.label = "Elegí una operación"
+        else:
+            boton.label = f"Enviar a {self.operation}"
+
+        boton.disabled = self.selected is None or self.operation is None
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Cambia la carpeta que muestra el árbol.
+
+        Se acepta `~` porque es como se escribe la carpeta personal en una terminal, y
+        quien usa esto está en una.
+
+        Args:
+            event: Lo que emite el campo al confirmarse con Enter.
+        """
+        if event.input.id != "root":
+            return
+
+        # `expandvars` para $HOME y `expanduser` para ~: las dos formas en que se escribe
+        # una ruta en una terminal, que es de donde viene quien usa esto.
+        elegida = Path(os.path.expandvars(event.value.strip())).expanduser()
+
+        if not elegida.is_absolute():
+            # Relativa a la carpeta que se está viendo, no a donde arrancó el programa.
+            # Es lo que hace que `..` suba un nivel DESDE ACÁ, y que se pueda repetir:
+            # midiéndola desde el arranque, `..` lleva siempre al mismo lugar.
+            elegida = self.directory / elegida
+
+        elegida = elegida.resolve()
+
+        if not elegida.is_dir():
+            self.notify(f"No es una carpeta: {elegida}", severity="warning")
+            # Se restaura la anterior: dejar el texto inválido en pantalla hace creer que
+            # el árbol muestra esa carpeta.
+            event.input.value = str(self.directory)
+            return
+
+        self.directory = elegida
+        # Se muestra la ruta ya resuelta y no lo que se escribió: después de un `..` el
+        # campo diría `..`, que no informa dónde quedaste parado.
+        event.input.value = str(elegida)
+
+        arbol = self.query_one("#tree", ImageTree)
+        arbol.path = elegida
+        arbol.focus()
 
     async def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         """Cambia la operación elegida y rearma los parámetros que le corresponden.
@@ -207,6 +299,7 @@ class ImagesApp(App):
         """
         self.operation = str(event.pressed.label)
         await self.rebuild_parameters()
+        self.update_send_button()
 
     async def rebuild_parameters(self) -> None:
         """Deja en pantalla solo los parámetros de la operación elegida.
@@ -408,7 +501,7 @@ class ImagesApp(App):
         panel = self.query_one("#result", Static)
 
         if self._session is None or not self._session.is_connected or self.detailed is None:
-            panel.update("")
+            panel.update(NO_RESULT_YET)
             return
 
         try:

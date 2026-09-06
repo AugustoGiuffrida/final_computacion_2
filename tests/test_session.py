@@ -700,3 +700,102 @@ class DownloadingOverAnExistingFile(SessionTestCase):
             await client_session.download("a3f7b2c1", destination)
 
         self.assertEqual(list(self.working_directory.iterdir()), [])
+
+
+class OneRequestAtATime(SessionTestCase):
+    """Que dos pedidos simultáneos se serialicen en vez de pisarse.
+
+    El protocolo es un diálogo estricto: se manda un pedido y se lee su respuesta. Dos a la
+    vez sobre el mismo socket se llevan la respuesta del otro, y el síntoma es traicionero
+    —`history` recibe la respuesta de un `submit`, no encuentra el campo `jobs` y devuelve
+    una lista vacía— así que parece que no hay trabajos en vez de parecer un error.
+
+    El cliente de terminal nunca lo intenta, porque hace un pedido por vez. El visual sí:
+    refresca solo mientras el usuario opera.
+    """
+
+    async def echoing_server(self) -> tuple[FakeServer, session.ClientSession]:
+        """Levanta un servidor que responde a cada pedido diciendo cuál era.
+
+        Returns:
+            El servidor y una sesión ya conectada.
+        """
+
+        async def answer_each(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            while True:
+                try:
+                    header, _ = await fake_server.read_request(reader)
+                except asyncio.IncompleteReadError:
+                    return
+
+                kind = header[messages.TYPE_FIELD]
+                if kind == messages.HISTORY:
+                    await protocol.send_message(writer, {
+                        messages.TYPE_FIELD: messages.OK,
+                        "jobs": [{"job_id": "j1", "op": "clean", "status": messages.DONE}],
+                    })
+                else:
+                    await protocol.send_message(writer, {
+                        messages.TYPE_FIELD: messages.OK,
+                        "job_id": "nuevo",
+                        "status": messages.QUEUED,
+                    })
+
+        fake_server = FakeServer(answer_each)
+
+        return fake_server, await self.connected_session(fake_server)
+
+    async def test_two_requests_at_once_do_not_collide(self) -> None:
+        """Sin el candado esto levanta `readexactly() called while another coroutine…`."""
+        _, client_session = await self.echoing_server()
+
+        history, status = await asyncio.gather(
+            client_session.history(10),
+            client_session.status("j1"),
+        )
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(status["job_id"], "nuevo")
+
+    async def test_each_caller_gets_its_own_answer(self) -> None:
+        """El síntoma real: `history` recibía la respuesta del otro pedido y volvía vacío."""
+        _, client_session = await self.echoing_server()
+
+        results = await asyncio.gather(
+            *(client_session.history(10) for _ in range(5)),
+            *(client_session.status("j1") for _ in range(5)),
+        )
+
+        for history in results[:5]:
+            self.assertEqual(len(history), 1, "un historial volvió vacío: hubo cruce")
+        for status in results[5:]:
+            self.assertEqual(status["job_id"], "nuevo")
+
+    async def test_the_server_saw_every_request(self) -> None:
+        """Serializar no puede significar perder pedidos."""
+        fake_server, client_session = await self.echoing_server()
+
+        await asyncio.gather(*(client_session.history(10) for _ in range(6)))
+
+        self.assertEqual(len(fake_server.requests), 6)
+
+    async def test_waiting_does_not_deadlock_itself(self) -> None:
+        """`wait_until_finished` consulta en bucle: no debe tomar el candado por fuera.
+
+        Si lo hiciera, se quedaría con la conexión reservada durante toda la espera y
+        cualquier otro pedido —el refresco de una interfaz, por ejemplo— colgaría.
+        """
+        _, client_session = await self.echoing_server()
+
+        async def keep_polling() -> None:
+            for _ in range(3):
+                await client_session.history(10)
+
+        final, _ = await asyncio.gather(
+            client_session.wait_until_finished("j1", timeout=1),
+            keep_polling(),
+        )
+
+        self.assertEqual(final["status"], messages.QUEUED)

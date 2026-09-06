@@ -81,7 +81,7 @@ en `app/common/config.py`.
 python -m unittest discover -s tests -t .
 ```
 
-Tienen que pasar las 212 pruebas. No necesitan Redis ni Docker: las que involucran
+Tienen que pasar las 216 pruebas. No necesitan Redis ni Docker: las que involucran
 workers usan dobles de prueba.
 
 ## 4. Arrancar el sistema
@@ -126,8 +126,9 @@ Con el servidor y el worker levantados —terminales 1 y 2—, en una tercera:
 python -m app.tui --user ana --port 9876
 ```
 
-Ocupa la terminal entera hasta que salgas con `q`. Conviene arrancarlo con `--dir` apuntando
-a donde tengas imágenes:
+Ocupa la terminal entera hasta que salgas con `q`. El campo de arriba a la izquierda cambia
+la carpeta que se explora —se escribe la ruta y se confirma con Enter; `~` vale—, así que no
+hace falta reiniciar para ir a otro lado. `--dir` solo elige con cuál arranca:
 
 ```bash
 python -m app.tui --user ana --port 9876 --dir img_test --out /tmp

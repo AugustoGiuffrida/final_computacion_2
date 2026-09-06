@@ -1,35 +1,53 @@
-/* Tres columnas: el árbol angosto, la operación fija, los trabajos ocupando el resto. */
+/* Tres columnas con borde propio: el árbol angosto, la operación fija, los trabajos
+   ocupando el resto. El título de cada panel va incrustado en su borde —`border_title`,
+   que se asigna en `on_mount`— y no en una fila aparte, que gastaría un renglón por
+   columna. */
 
 #images {
-    width: 32;
-    border-right: solid $panel;
+    width: 34;
+    border: round $primary;
+    padding: 0 1;
 }
 
 #operation {
-    width: 34;
-    border-right: solid $panel;
+    width: 36;
+    border: round $primary;
     padding: 0 1;
 }
 
 #jobs {
+    border: round $primary;
     padding: 0 1;
 }
 
-.title {
-    text-style: bold;
-    padding: 0 1;
-    background: $panel;
-    width: 100%;
+/* La tabla se come todo el alto que sobra; el resultado queda anclado abajo, con altura
+   fija, para que no salte cada vez que cambia la cantidad de campos. */
+#table {
+    height: 1fr;
 }
 
-#chosen {
-    padding: 1;
-    color: $text-muted;
+#result-panel {
+    height: 14;
+    border: round $primary;
+    padding: 0 1;
+}
+
+#tree {
+    height: 1fr;
+}
+
+#root {
+    margin: 0 0 1 0;
 }
 
 .field {
     padding: 1 0 0 0;
     color: $text-muted;
+}
+
+#chosen {
+    padding: 1 0;
+    width: 100%;
 }
 
 #parameters {
@@ -46,6 +64,6 @@
 }
 
 #result {
-    padding: 1;
+    padding: 1 0;
     height: auto;
 }
