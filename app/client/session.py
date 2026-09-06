@@ -16,6 +16,7 @@ transporta todos los pedidos que hagan falta.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -248,7 +249,17 @@ class ClientSession:
         response = await self._receive_response()
         payload_size = protocol.payload_size_of(response)
 
-        output_path = destination or Path(response.get("filename", f"{job_id}.bin"))
+        # El nombre lo sugiere el SERVIDOR, así que tampoco se puede confiar en él: sin
+        # `.name`, un 'filename' como '../../x.jpg' haría escribir fuera del directorio
+        # actual. Es la misma defensa que aplica `incoming.safe_filename` del otro lado,
+        # sobre el nombre que manda el cliente.
+        suggested = Path(response.get("filename", "")).name
+        if suggested in ("", ".", ".."):
+            # `.name` quita los directorios pero deja pasar '..', que como ruta apunta al
+            # directorio de arriba en vez de a un archivo.
+            suggested = f"{job_id}.bin"
+
+        output_path = destination or Path(suggested)
         await self._write_payload_to_disk(output_path, payload_size, on_progress)
 
         return output_path, response
@@ -326,12 +337,24 @@ class ClientSession:
         payload_size: int,
         on_progress: protocol.ProgressCallback | None,
     ) -> None:
-        """Vuelca el payload de la respuesta en un archivo, bloque por bloque."""
+        """Vuelca el payload de la respuesta en un archivo, bloque por bloque.
+
+        Se escribe en un temporal al lado del destino y recién al final se lo mueve encima.
+        Es lo que hace que una transferencia cortada no destruya lo que ya había: abrir en
+        modo 'wb' vacía el archivo antes de recibir el primer byte, así que escribir
+        directo sobre el destino lo pierde apenas empieza la descarga.
+
+        Args:
+            output_path: Dónde tiene que quedar el archivo.
+            payload_size: Cuántos bytes anunció el servidor.
+            on_progress: Se llama con los bytes recibidos y el total, para el avance.
+        """
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = output_path.with_name(f".{output_path.name}.parcial")
 
         received_bytes = 0
         try:
-            with open(output_path, "wb") as output_file:
+            with open(temporary_path, "wb") as output_file:
                 async for chunk in protocol.stream_payload(
                     self._require_reader(), payload_size
                 ):
@@ -342,8 +365,12 @@ class ClientSession:
                         on_progress(received_bytes, payload_size)
         except BaseException:
             # Un archivo truncado es peor que ninguno: parece una imagen y no lo es.
-            output_path.unlink(missing_ok=True)
+            temporary_path.unlink(missing_ok=True)
             raise
+
+        # `os.replace` es atómico dentro del mismo sistema de archivos: el destino pasa de
+        # ser el archivo viejo a ser el nuevo, sin un instante intermedio a medias.
+        os.replace(temporary_path, output_path)
 
     def _require_writer(self) -> asyncio.StreamWriter:
         """Devuelve el stream de escritura, verificando que la sesión esté conectada.

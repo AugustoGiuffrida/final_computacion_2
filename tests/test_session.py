@@ -9,6 +9,7 @@ en `test_protocol.py`. Lo único fingido es qué contesta del otro lado.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import tempfile
 import unittest
 import warnings
@@ -585,3 +586,116 @@ class DialogueRules(SessionTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrustingTheServer(SessionTestCase):
+    """Lo que el cliente hace con los datos que le manda el servidor.
+
+    El servidor ya se defiende del nombre de archivo que manda el cliente
+    (`incoming.safe_filename`). Estas pruebas verifican la defensa simétrica: el cliente
+    tampoco puede confiar en lo que le llega, más aún sin cifrado del transporte, donde un
+    intermediario puede alterar la respuesta.
+    """
+
+    async def server_suggesting(self, filename: str) -> session.ClientSession:
+        """Levanta un servidor que responde con ese nombre de archivo sugerido.
+
+        Args:
+            filename: El 'filename' que devuelve en la respuesta.
+
+        Returns:
+            Una sesión ya conectada a ese servidor.
+        """
+
+        async def answer(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            await fake_server.read_request(reader)
+            await protocol.send_message(writer, {
+                messages.TYPE_FIELD: messages.OK,
+                "job_id": "a3f7b2c1",
+                "filename": filename,
+            }, b"contenido")
+
+        fake_server = FakeServer(answer)
+
+        return await self.connected_session(fake_server)
+
+    async def test_a_suggested_name_cannot_escape_the_directory(self) -> None:
+        """Un '../..' en el nombre sugerido no debe sacar la escritura del directorio."""
+        client_session = await self.server_suggesting("../../robado.jpg")
+
+        working = self.working_directory / "adentro"
+        working.mkdir()
+        with contextlib.chdir(working):
+            output_path, _ = await client_session.download("a3f7b2c1")
+
+            self.assertEqual(output_path, Path("robado.jpg"))
+            self.assertTrue(output_path.resolve().is_relative_to(working.resolve()))
+
+    async def test_a_name_that_is_only_a_path_falls_back_to_the_job_id(self) -> None:
+        """Si al quitarle la ruta no queda nada, se usa el identificador del trabajo."""
+        client_session = await self.server_suggesting("../")
+
+        with contextlib.chdir(self.working_directory):
+            output_path, _ = await client_session.download("a3f7b2c1")
+
+            self.assertEqual(output_path, Path("a3f7b2c1.bin"))
+
+
+class DownloadingOverAnExistingFile(SessionTestCase):
+    """Qué le pasa a un archivo que ya estaba cuando se descarga encima."""
+
+    async def test_a_cut_download_keeps_the_previous_file(self) -> None:
+        """Bajar de nuevo y que se corte la red no debe dejarte sin el resultado anterior.
+
+        Escribir directo sobre el destino lo perdía apenas empezaba la descarga: abrir en
+        modo 'wb' vacía el archivo antes de recibir el primer byte.
+        """
+
+        async def announce_more_than_it_sends(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            await fake_server.read_request(reader)
+            writer.write(protocol.pack_header({
+                messages.TYPE_FIELD: messages.OK, "job_id": "a3f7b2c1",
+                protocol.PAYLOAD_SIZE_FIELD: 5000,
+            }))
+            writer.write(b"0123456789")
+            await writer.drain()
+            writer.close()
+
+        fake_server = FakeServer(announce_more_than_it_sends)
+        client_session = await self.connected_session(fake_server)
+
+        previous = self.working_directory / "resultado.jpg"
+        previous.write_bytes(b"el resultado que ya tenia")
+
+        with self.assertRaises(asyncio.IncompleteReadError):
+            await client_session.download("a3f7b2c1", previous)
+
+        self.assertEqual(previous.read_bytes(), b"el resultado que ya tenia")
+
+    async def test_nothing_partial_is_left_behind(self) -> None:
+        """El temporal tampoco debe quedar tirado en el directorio."""
+
+        async def announce_more_than_it_sends(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            await fake_server.read_request(reader)
+            writer.write(protocol.pack_header({
+                messages.TYPE_FIELD: messages.OK, "job_id": "a3f7b2c1",
+                protocol.PAYLOAD_SIZE_FIELD: 5000,
+            }))
+            writer.write(b"0123456789")
+            await writer.drain()
+            writer.close()
+
+        fake_server = FakeServer(announce_more_than_it_sends)
+        client_session = await self.connected_session(fake_server)
+
+        destination = self.working_directory / "nueva.jpg"
+        with self.assertRaises(asyncio.IncompleteReadError):
+            await client_session.download("a3f7b2c1", destination)
+
+        self.assertEqual(list(self.working_directory.iterdir()), [])
