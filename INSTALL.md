@@ -81,7 +81,7 @@ en `app/common/config.py`.
 python -m unittest discover -s tests -t .
 ```
 
-Tienen que pasar las 216 pruebas. No necesitan Redis ni Docker: las que involucran
+Tienen que pasar las 225 pruebas. No necesitan Redis ni Docker: las que involucran
 workers usan dobles de prueba.
 
 ## 4. Arrancar el sistema

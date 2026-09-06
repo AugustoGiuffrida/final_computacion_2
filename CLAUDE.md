@@ -67,7 +67,7 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
    `faces.py` (detección con cascadas Haar de OpenCV 4).
 7. `app/server/main/jobs.py` — el puente con la cola: encolar y el monitor que traduce
    los estados de Celery a los del protocolo.
-8. `tests/` — 216 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
+8. `tests/` — 225 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
    workers reales.
 9. `app/tui/` — cliente visual sobre Textual: otra interfaz sobre el mismo protocolo.
    Reutiliza `ClientSession` **sin modificarla**, que es lo que demuestra que la separación

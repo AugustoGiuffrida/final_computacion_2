@@ -123,7 +123,7 @@ python -m app.tui --user ana
 |---|---|
 | flechas | moverse dentro del panel |
 | `Enter` | en el árbol, elegir la imagen; en la lista, la operación |
-| `Enter` en el campo de arriba | cambiar de carpeta: se escribe la ruta, y `~` vale |
+| `Enter` en el campo de arriba | cambiar de carpeta |
 | `Tab` | pasar al panel siguiente |
 | `Enter` sobre una fila de trabajos | descargar su resultado |
 | `d` | lo mismo, salvo mientras se escribe en un campo |
@@ -139,6 +139,11 @@ acá igual, y se lo ve pasar de `QUEUED` a `PROCESSING` a `DONE`.
 | `--host` `--port` | dónde está el servidor |
 | `--dir` | con qué carpeta arranca el árbol; después se cambia desde la pantalla |
 | `--out` | dónde guardar lo que se descargue |
+
+El campo **Carpeta** se comporta como un `cd`: acepta rutas absolutas, `~`, `$HOME`, y
+relativas **a la carpeta que estás viendo** —así que `..` sube un nivel cada vez que lo
+apretás, y el nombre de una subcarpeta entra en ella—. Después de moverte muestra la ruta
+completa, para que sepas dónde quedaste.
 
 Los parámetros de cada operación **no** van por la línea de comandos: se eligen en la
 pantalla, y cambian según la operación. Un campo en blanco significa "el valor por defecto
@@ -185,5 +190,5 @@ volumen de imágenes.
 python -m unittest discover -s tests -t .
 ```
 
-216 pruebas. Levantan servidores reales en puertos libres, lanzan procesos hijos de verdad
+225 pruebas. Levantan servidores reales en puertos libres, lanzan procesos hijos de verdad
 y usan bases SQLite temporales. No necesitan Redis: la cola se sustituye por un doble.
