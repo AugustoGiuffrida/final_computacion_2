@@ -131,7 +131,7 @@ la carpeta que se explora —se escribe la ruta y se confirma con Enter; `~` val
 hace falta reiniciar para ir a otro lado. `--dir` solo elige con cuál arranca:
 
 ```bash
-python -m app.tui --user ana --port 9876 --dir img_test --out /tmp
+python -m app.tui --user ana --port 9876 --dir img_test --output /tmp
 ```
 
 Si el servidor no está levantado, arranca igual y avisa que no pudo conectarse, en vez de

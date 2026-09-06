@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="dónde arranca el árbol de imágenes (por defecto: el directorio actual)",
     )
     parser.add_argument(
-        "--out", type=Path, default=Path.cwd(), dest="downloads",
+        "-o", "--output", type=Path, default=Path.cwd(), dest="downloads",
         help="dónde guardar los resultados descargados (por defecto: el directorio actual)",
     )
 

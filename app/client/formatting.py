@@ -60,11 +60,6 @@ def status_style(status: str) -> str:
     return STATUS_STYLES.get(status, UNKNOWN_STATUS_STYLE)[0]
 
 
-def status_icon(status: str) -> str:
-    """Devuelve el carácter que acompaña a un estado."""
-    return STATUS_STYLES.get(status, UNKNOWN_STATUS_STYLE)[1]
-
-
 def status_markup(status: str) -> str:
     """Arma el estado listo para imprimir, por ejemplo '[green]✓ DONE[/green]'."""
     style, icon = STATUS_STYLES.get(status, UNKNOWN_STATUS_STYLE)

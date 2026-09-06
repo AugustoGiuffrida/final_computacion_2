@@ -410,7 +410,7 @@ terminal, que hace lo mismo que el cliente de línea de comandos.
 En una terminal aparte, con el servidor y el worker levantados:
 
 ```bash
-python -m app.tui --user ana --port 9876 --dir img_test --out /tmp
+python -m app.tui --user ana --port 9876 --dir img_test --output /tmp
 ```
 
 | Tecla | Qué hace |

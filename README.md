@@ -138,7 +138,7 @@ acá igual, y se lo ve pasar de `QUEUED` a `PROCESSING` a `DONE`.
 | `--user` | con qué nombre presentarse (obligatorio) |
 | `--host` `--port` | dónde está el servidor |
 | `--dir` | con qué carpeta arranca el árbol; después se cambia desde la pantalla |
-| `--out` | dónde guardar lo que se descargue |
+| `--output` | dónde guardar lo que se descargue |
 
 El campo **Carpeta** se comporta como un `cd`: acepta rutas absolutas, `~`, `$HOME`, y
 relativas **a la carpeta que estás viendo** —así que `..` sube un nivel cada vez que lo

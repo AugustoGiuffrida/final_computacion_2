@@ -195,10 +195,10 @@ class ImagesApp(App):
         self.query_one("#upload", ProgressBar).display = False
 
         # Arrancar con una operación elegida y sus parámetros a la vista.
-        operaciones = self.query_one("#operations", RadioSet)
-        for boton in operaciones.query(RadioButton):
-            if str(boton.label) == DEFAULT_OPERATION:
-                boton.value = True
+        operations = self.query_one("#operations", RadioSet)
+        for button in operations.query(RadioButton):
+            if str(button.label) == DEFAULT_OPERATION:
+                button.value = True
                 break
 
         self.update_send_button()
@@ -240,16 +240,16 @@ class ImagesApp(App):
         Es preferible a dejarlo encendido y contestar con un error después de apretarlo:
         el estado de la pantalla ya sabe si se puede enviar, así que conviene mostrarlo.
         """
-        boton = self.query_one("#send", Button)
+        button = self.query_one("#send", Button)
 
         if self.selected is None:
-            boton.label = "Elegí una imagen"
+            button.label = "Elegí una imagen"
         elif self.operation is None:
-            boton.label = "Elegí una operación"
+            button.label = "Elegí una operación"
         else:
-            boton.label = f"Enviar a {self.operation}"
+            button.label = f"Enviar a {self.operation}"
 
-        boton.disabled = self.selected is None or self.operation is None
+        button.disabled = self.selected is None or self.operation is None
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Cambia la carpeta que muestra el árbol.
@@ -265,31 +265,31 @@ class ImagesApp(App):
 
         # `expandvars` para $HOME y `expanduser` para ~: las dos formas en que se escribe
         # una ruta en una terminal, que es de donde viene quien usa esto.
-        elegida = Path(os.path.expandvars(event.value.strip())).expanduser()
+        chosen = Path(os.path.expandvars(event.value.strip())).expanduser()
 
-        if not elegida.is_absolute():
+        if not chosen.is_absolute():
             # Relativa a la carpeta que se está viendo, no a donde arrancó el programa.
             # Es lo que hace que `..` suba un nivel DESDE ACÁ, y que se pueda repetir:
             # midiéndola desde el arranque, `..` lleva siempre al mismo lugar.
-            elegida = self.directory / elegida
+            chosen = self.directory / chosen
 
-        elegida = elegida.resolve()
+        chosen = chosen.resolve()
 
-        if not elegida.is_dir():
-            self.notify(f"No es una carpeta: {elegida}", severity="warning")
+        if not chosen.is_dir():
+            self.notify(f"No es una carpeta: {chosen}", severity="warning")
             # Se restaura la anterior: dejar el texto inválido en pantalla hace creer que
             # el árbol muestra esa carpeta.
             event.input.value = str(self.directory)
             return
 
-        self.directory = elegida
+        self.directory = chosen
         # Se muestra la ruta ya resuelta y no lo que se escribió: después de un `..` el
         # campo diría `..`, que no informa dónde quedaste parado.
-        event.input.value = str(elegida)
+        event.input.value = str(chosen)
 
-        arbol = self.query_one("#tree", ImageTree)
-        arbol.path = elegida
-        arbol.focus()
+        tree_widget = self.query_one("#tree", ImageTree)
+        tree_widget.path = chosen
+        tree_widget.focus()
 
     async def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         """Cambia la operación elegida y rearma los parámetros que le corresponden.
@@ -319,7 +319,7 @@ class ImagesApp(App):
             if name in PARAMETER_CHOICES:
                 await area.mount(
                     Select(
-                        [(opcion, opcion) for opcion in PARAMETER_CHOICES[name]],
+                        [(option, option) for option in PARAMETER_CHOICES[name]],
                         id=f"param-{name}",
                         allow_blank=True,
                         prompt="(el que use el servidor)",
@@ -345,23 +345,23 @@ class ImagesApp(App):
         parameters: dict[str, object] = {}
 
         for name in config.OPERATION_PARAMETERS[self.operation]:
-            campo = self.query_one(f"#param-{name}")
-            crudo = campo.value
+            field = self.query_one(f"#param-{name}")
+            raw = field.value
 
             # Un campo sin completar se omite, y el servidor aplica su valor por defecto.
             # Se comprueba que sea texto con contenido en vez de compararlo contra el
             # centinela de `Select`: ese centinela cambió de forma entre versiones de
             # Textual, y compararlo mal hacía que se enviara al servidor.
-            if not isinstance(crudo, str) or not crudo.strip():
+            if not isinstance(raw, str) or not raw.strip():
                 continue
 
-            validador = PARAMETER_VALIDATORS.get(name)
-            if validador is None:
-                parameters[name] = crudo
+            validator = PARAMETER_VALIDATORS.get(name)
+            if validator is None:
+                parameters[name] = raw
                 continue
 
             try:
-                parameters[name] = validador(str(crudo))
+                parameters[name] = validator(str(raw))
             except Exception as falla:
                 raise ValueError(f"{PARAMETER_LABELS.get(name, name)}: {falla}") from None
 
@@ -406,20 +406,20 @@ class ImagesApp(App):
         def avance(enviados: int, _total: int) -> None:
             barra.update(progress=enviados)
 
-        boton = self.query_one("#send", Button)
-        boton.disabled = True
+        button = self.query_one("#send", Button)
+        button.disabled = True
         try:
-            respuesta = await self._session.submit(
+            response = await self._session.submit(
                 self.selected, self.operation, parameters, on_progress=avance
             )
         except (messages.ServerError, OSError) as falla:
             self.notify(f"El servidor rechazó el envío: {falla}", severity="error", timeout=10)
             return
         finally:
-            boton.disabled = False
+            button.disabled = False
             barra.display = False
 
-        if respuesta.get("deduplicated"):
+        if response.get("deduplicated"):
             self.notify("Ya habías procesado esta imagen: se reutiliza el resultado anterior")
         else:
             self.notify(f"Enviada: {self.selected.name} → {self.operation}")
@@ -505,28 +505,28 @@ class ImagesApp(App):
             return
 
         try:
-            estado = await self._session.status(self.detailed)
+            state = await self._session.status(self.detailed)
         except (messages.ServerError, OSError):
             panel.update("")
             return
 
-        if estado.get("status") == messages.FAILED:
-            panel.update(f"[red]{estado.get('error', 'el trabajo falló')}[/red]")
+        if state.get("status") == messages.FAILED:
+            panel.update(f"[red]{state.get('error', 'el trabajo falló')}[/red]")
             return
 
-        resultado = estado.get("result") or {}
-        if not resultado:
+        result = state.get("result") or {}
+        if not result:
             panel.update("[dim]todavía sin resultado[/dim]")
             return
 
-        renglones = []
-        for campo, valor in resultado.items():
-            texto = formatting.format_result_value(campo, valor)
-            if formatting.is_privacy_sensitive(campo, valor):
-                texto = f"[bold yellow]{texto}[/bold yellow] [dim](dato privado)[/dim]"
-            renglones.append(f"[dim]{formatting.result_label(campo)}:[/dim] {texto}")
+        lines = []
+        for field, value in result.items():
+            rendered = formatting.format_result_value(field, value)
+            if formatting.is_privacy_sensitive(field, value):
+                rendered = f"[bold yellow]{rendered}[/bold yellow] [dim](dato privado)[/dim]"
+            lines.append(f"[dim]{formatting.result_label(field)}:[/dim] {rendered}")
 
-        panel.update("\n".join(renglones))
+        panel.update("\n".join(lines))
 
     async def action_download(self) -> None:
         """Descarga el resultado del trabajo señalado en la tabla.
