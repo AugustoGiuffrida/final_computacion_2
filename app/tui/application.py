@@ -383,6 +383,19 @@ class ImagesApp(App):
             self.detailed = str(event.row_key.value)
             await self.refresh_result()
 
+    async def on_data_table_row_selected(
+        self, event: DataTable.RowSelected
+    ) -> None:
+        """Descarga el resultado del trabajo al confirmar su fila con Enter.
+
+        Es la segunda forma de descargar, y la confiable: el atajo `d` no funciona mientras
+        se está escribiendo en un campo de parámetros, porque ahí la tecla es una letra.
+
+        Args:
+            event: Lo que emite la tabla al confirmar una fila.
+        """
+        await self.action_download()
+
     async def refresh_result(self) -> None:
         """Pide el estado del trabajo señalado y muestra lo que produjo.
 

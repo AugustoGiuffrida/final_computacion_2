@@ -52,6 +52,8 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
 
 1. `app/common/` — `protocol.py` (framing), `messages.py` (catálogo) y `config.py`.
 2. `app/client/` — CLI completa: `cli.py`, `session.py`, `console.py`, `formatting.py`.
+   `session.py` y `formatting.py` son la biblioteca del cliente: no imprimen ni saben de
+   presentación, y por eso los reutiliza también el cliente visual.
 3. `app/server/main/` — el proceso principal, completo: `cli.py` (arranque, señales),
    `image_server.py` (handler y despachador), `incoming.py` (validación de lo que llega),
    `outgoing.py` (armado de lo que sale) y `registry.py` (índice en memoria de trabajos).
@@ -67,9 +69,12 @@ Ojo con el vocabulario: en redes, "trama" es la unidad de la **capa de enlace**
    los estados de Celery a los del protocolo.
 8. `tests/` — 212 pruebas sobre `unittest`, con servidores, procesos hijos, bases y
    workers reales.
-9. `Dockerfile`, `.dockerignore` y `docker-compose.yml` — el despliegue: una sola imagen
+9. `app/tui/` — cliente visual sobre Textual: otra interfaz sobre el mismo protocolo.
+   Reutiliza `ClientSession` **sin modificarla**, que es lo que demuestra que la separación
+   entre red y presentación era real y no una afirmación.
+10. `Dockerfile`, `.dockerignore` y `docker-compose.yml` — el despliegue: una sola imagen
    para el servidor y los workers, y Redis al lado. Documentado en `INSTALL.md`.
-10. `docs/05_demostracion.md` — recorrido de demostración, comando por comando.
+11. `docs/05_demostracion.md` — recorrido de demostración, comando por comando.
 
 `app/server/` se divide en `main/` (proceso principal) e `intake/` (proceso hijo), con lo
 compartido en la raíz. La separación no es cosmética: el hijo importa Pillow y `sqlite3`,

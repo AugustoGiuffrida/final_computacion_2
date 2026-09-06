@@ -402,6 +402,46 @@ existieran los workers.
 
 ---
 
+## El cliente visual
+
+El enunciado menciona la incorporación de un entorno visual como adicional. Hay uno, en la
+terminal, que hace lo mismo que el cliente de línea de comandos.
+
+En una terminal aparte, con el servidor y el worker levantados:
+
+```bash
+python -m app.tui --user ana --port 9876 --dir img_test --out /tmp
+```
+
+| Tecla | Qué hace |
+|---|---|
+| flechas | moverse dentro del panel |
+| `Enter` | elegir la imagen, o la operación |
+| `Tab` | pasar al panel siguiente |
+| `Enter` sobre una fila de trabajos | descargar su resultado |
+| `r` | refrescar ahora |
+| `q` | salir |
+
+**Lo que conviene mostrar acá** no son los paneles, sino esto: dejalo abierto y mandá un
+trabajo **desde la otra terminal**, con el cliente de línea de comandos. Aparece solo en la
+tabla y se lo ve pasar de `QUEUED` a `PROCESSING` a `DONE`.
+
+Son dos clientes distintos, hablando el mismo protocolo, contra el mismo servidor, al mismo
+tiempo. Y el de la derecha se entera de lo que hizo el de la izquierda **preguntándole al
+servidor**, no porque se conozcan entre sí.
+
+### Por qué esto vale como argumento de diseño
+
+`session.py` dice en su docstring que no sabe nada de presentación. Eso, hasta que existió
+esta interfaz, era **una afirmación**. Ahora es una demostración: el cliente visual reutiliza
+`ClientSession` y `formatting` **sin una sola línea de cambio** en ninguno de los dos, y se
+ve completamente distinto.
+
+Es el mismo razonamiento que separa el framing del protocolo: una separación se prueba
+cambiando una mitad y viendo que la otra no se entera.
+
+---
+
 ## Mostrar la concurrencia
 
 El trabajo es de concurrencia, así que hay que mostrarla y no afirmarla. Son dos cosas

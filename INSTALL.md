@@ -118,6 +118,29 @@ Si eso devuelve una imagen saneada, la instalación está completa. El recorrido
 paso a paso y con lo que hay que mirar en cada uno, está en
 [`docs/05_demostracion.md`](docs/05_demostracion.md).
 
+## Probar el cliente visual
+
+Con el servidor y el worker levantados —terminales 1 y 2—, en una tercera:
+
+```bash
+python -m app.tui --user ana --port 9876
+```
+
+Ocupa la terminal entera hasta que salgas con `q`. Conviene arrancarlo con `--dir` apuntando
+a donde tengas imágenes:
+
+```bash
+python -m app.tui --user ana --port 9876 --dir img_test --out /tmp
+```
+
+Si el servidor no está levantado, arranca igual y avisa que no pudo conectarse, en vez de
+cerrarse: así se ve el error en pantalla y no en un volcado de pila.
+
+Lo más vistoso es abrirlo **y usar el cliente de terminal al mismo tiempo** desde otra
+ventana: los trabajos que mandes por línea de comandos aparecen solos en la tabla, y se los
+ve pasar de `QUEUED` a `PROCESSING` a `DONE`. Son dos clientes distintos hablando el mismo
+protocolo contra el mismo servidor.
+
 ## Dónde quedan los archivos
 
 | Ruta | Qué guarda | Compartido |

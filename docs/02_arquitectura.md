@@ -44,7 +44,7 @@ tabla es el resumen de la arquitectura:
 
 | Canal | Une | Alcance | Qué transporta |
 |---|---|---|---|
-| **Socket TCP** | cliente ↔ servidor | entre máquinas | pedidos e imágenes |
+| **Socket TCP** | clientes ↔ servidor | entre máquinas | pedidos e imágenes |
 | **multiprocessing.Pipe** | servidor ↔ proceso de ingreso | misma máquina, procesos emparentados | pedidos de revisión, sus respuestas y los eventos |
 | **Redis** | servidor ↔ workers | entre máquinas, procesos sin relación | invocaciones y estados |
 | **Volumen compartido (NFS)** | servidor ↔ workers | red: los workers pueden estar en otra máquina | los archivos de imagen |

@@ -97,6 +97,51 @@ python -m app.client --user ana --action submit --file img_test/grupo.jpg --op c
 
 Ambos programas tienen `--help` con la lista completa y más ejemplos.
 
+## Cliente visual
+
+Además del cliente de línea de comandos hay uno **visual**, en la terminal, que hace lo
+mismo: elegir una imagen, aplicarle una operación y ver los trabajos avanzar.
+
+```bash
+python -m app.tui --user ana
+```
+
+```
+┌─ Imágenes ────────┬─ Operación ───────────┬─ Trabajos ──────────────┐
+│ 📁 img_test/      │  ( ) anonymize        │ ✓ DONE   sanitize       │
+│   grupo.jpg       │  ( ) clean            │ ◐ PROC   anonymize      │
+│   paisaje.jpg     │  (•) sanitize         │ ◷ QUEUED clean          │
+│                   │                       ├─ Resultado ─────────────┤
+│                   │  Cómo cubrir  [blur▾] │ Caras detectadas: 12    │
+│                   │  Calidad      [70   ] │ Tamaño final: 169.7 KB  │
+│                   │  [   Enviar   ]       │                         │
+└───────────────────┴───────────────────────┴─────────────────────────┘
+```
+
+| Tecla | Qué hace |
+|---|---|
+| flechas | moverse dentro del panel |
+| `Enter` | en el árbol, elegir la imagen; en la lista, la operación |
+| `Tab` | pasar al panel siguiente |
+| `Enter` sobre una fila de trabajos | descargar su resultado |
+| `d` | lo mismo, salvo mientras se escribe en un campo |
+| `r` | refrescar ahora, sin esperar |
+| `q` | salir |
+
+La tabla se actualiza sola cada segundo: un trabajo enviado desde **otra** terminal aparece
+acá igual, y se lo ve pasar de `QUEUED` a `PROCESSING` a `DONE`.
+
+| Argumento | Para qué |
+|---|---|
+| `--user` | con qué nombre presentarse (obligatorio) |
+| `--host` `--port` | dónde está el servidor |
+| `--dir` | dónde arranca el árbol de imágenes |
+| `--out` | dónde guardar lo que se descargue |
+
+Los parámetros de cada operación **no** van por la línea de comandos: se eligen en la
+pantalla, y cambian según la operación. Un campo en blanco significa "el valor por defecto
+del servidor", igual que omitir la bandera en el otro cliente.
+
 ## Ejecutar el servidor
 
 ```bash
