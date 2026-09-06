@@ -17,6 +17,10 @@ Pillow==12.3.0
 # arrastra el cliente de Redis, que es el broker y el result backend.
 celery[redis]==5.6.3
 
+# El cliente visual. Está construida sobre Rich —misma autoría— así que reutiliza el
+# formato que ya usaba el cliente de terminal en vez de traer el suyo.
+textual==8.2.8
+
 # Detección de caras. Se fija la versión 4: la 5 quitó `CascadeClassifier` y sus cascadas
 # del paquete, y solo deja un detector que exige bajar un modelo aparte. `headless` evita
 # las dependencias de interfaz gráfica, que un worker no necesita.

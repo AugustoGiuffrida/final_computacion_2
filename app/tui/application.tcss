@@ -1,0 +1,28 @@
+/* Tres columnas: el árbol angosto, la operación fija, los trabajos ocupando el resto. */
+
+#images {
+    width: 32;
+    border-right: solid $panel;
+}
+
+#operation {
+    width: 34;
+    border-right: solid $panel;
+    padding: 0 1;
+}
+
+#jobs {
+    padding: 0 1;
+}
+
+.title {
+    text-style: bold;
+    padding: 0 1;
+    background: $panel;
+    width: 100%;
+}
+
+#chosen {
+    padding: 1;
+    color: $text-muted;
+}
