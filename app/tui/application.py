@@ -92,6 +92,7 @@ class ImagesApp(App):
         host: Dirección del servidor.
         port: Puerto del servidor.
         directory: Raíz del árbol de imágenes.
+        downloads: Dónde se guardan los resultados descargados.
         selected: La imagen elegida, o None si todavía no se eligió ninguna.
     """
 
@@ -101,9 +102,12 @@ class ImagesApp(App):
     BINDINGS = [
         ("q", "quit", "Salir"),
         ("r", "refresh_jobs", "Refrescar"),
+        ("d", "download", "Descargar"),
     ]
 
-    def __init__(self, user: str, host: str, port: int, directory: Path) -> None:
+    def __init__(
+        self, user: str, host: str, port: int, directory: Path, downloads: Path
+    ) -> None:
         """Guarda la configuración sin conectarse todavía.
 
         La conexión se abre en `on_mount`, cuando ya hay pantalla donde informar un fallo.
@@ -113,6 +117,7 @@ class ImagesApp(App):
         self.host = host
         self.port = port
         self.directory = directory
+        self.downloads = downloads
         self.selected: Path | None = None
         self.operation: str | None = None
         self._session: session.ClientSession | None = None
@@ -333,11 +338,58 @@ class ImagesApp(App):
             return
 
         table = self.query_one("#table", DataTable)
+
+        # La tabla se repinta entera cada segundo. Sin recordar dónde estaba el cursor, la
+        # fila elegida se perdería a cada refresco y no se podría llegar a apretar "d".
+        cursor = table.cursor_row
+
         table.clear()
         for job in jobs:
+            # El `job_id` va como clave de la fila: es lo que después pide la descarga, y
+            # no tiene por qué ocupar una columna en pantalla.
             table.add_row(
                 formatting.status_markup(job.get("status", "")),
                 job.get("op", ""),
                 job.get("filename", ""),
                 formatting.format_timestamp(job.get("created_at")),
+                key=job.get("job_id", ""),
             )
+
+        if 0 <= cursor < table.row_count:
+            table.move_cursor(row=cursor)
+
+    async def action_download(self) -> None:
+        """Descarga el resultado del trabajo señalado en la tabla.
+
+        Los rechazos que informa el servidor —que el trabajo no terminó, que la operación
+        no genera archivo— se muestran tal cual: son respuestas del protocolo, no fallas.
+        """
+        if self._session is None or not self._session.is_connected:
+            self.notify("No hay conexión con el servidor", severity="error")
+            return
+
+        table = self.query_one("#table", DataTable)
+        if not table.row_count:
+            self.notify("No hay ningún trabajo para descargar", severity="warning")
+            return
+
+        job_id = str(table.coordinate_to_cell_key((table.cursor_row, 0)).row_key.value)
+
+        # El nombre lo sugiere el servidor y recién se conoce con la respuesta, así que se
+        # baja a un temporal y se renombra al terminar. `.name` por lo mismo que en la
+        # sesión: el nombre viene de afuera y no debe sacar la escritura del directorio.
+        temporary = self.downloads / f".descarga-{job_id}"
+        try:
+            self.downloads.mkdir(parents=True, exist_ok=True)
+            _, response = await self._session.download(job_id, temporary)
+            suggested = Path(response.get("filename", "")).name or f"{job_id}.bin"
+            written = self.downloads / suggested
+            temporary.replace(written)
+        except messages.ServerError as failure:
+            self.notify(str(failure), severity="warning", timeout=8)
+            return
+        except OSError as failure:
+            self.notify(f"No se pudo descargar: {failure}", severity="error", timeout=8)
+            return
+
+        self.notify(f"Guardado en {written.resolve()}", timeout=8)

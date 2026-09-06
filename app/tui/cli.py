@@ -42,6 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--dir", type=Path, default=Path.cwd(), dest="directory",
         help="dónde arranca el árbol de imágenes (por defecto: el directorio actual)",
     )
+    parser.add_argument(
+        "--out", type=Path, default=Path.cwd(), dest="downloads",
+        help="dónde guardar los resultados descargados (por defecto: el directorio actual)",
+    )
 
     return parser
 
@@ -67,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         host=arguments.host,
         port=arguments.port,
         directory=arguments.directory,
+        downloads=arguments.downloads,
     ).run()
 
     return EXIT_OK
