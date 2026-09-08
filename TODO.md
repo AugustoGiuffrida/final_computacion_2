@@ -19,6 +19,16 @@ el índice y el trabajo queda mostrando el último estado conocido.
 *Cómo:* guardar el `task_id` de Celery junto al trabajo y, al arrancar, volver a vigilar
 los que estén sin terminar.
 
+### El volumen NFS es un punto único de falla
+
+Si el servidor NFS se cae o la máquina que lo sirve se suspende, el servidor no puede
+guardar imágenes y todos los envíos fallan. Con `soft` al menos fallan rápido y con un
+mensaje, en vez de colgarse, pero el sistema queda inutilizable hasta que vuelva.
+
+*Cómo se resolvería:* almacenamiento replicado, o de objetos (S3), donde el cliente
+reintenta contra otro nodo. Está fuera del alcance de un trabajo final, pero es la
+limitación que primero aparecería en uso real.
+
 ### Limpieza de resultados viejos
 
 Nada borra las imágenes procesadas: `storage/` crece indefinidamente. Debería haber una

@@ -80,15 +80,16 @@ lo es**, a propósito:
   servidor  ──── /var/lib/final   (local)   jobs.db
 ```
 
-**Cómo se concreta.** El servidor NFS es una máquina cualquiera de la red que exporta un
-directorio; puede ser la misma que corre los contenedores o no. El compose no lo levanta:
-lo consume, declarando el volumen con el driver `local` en modo `nfs`, y su dirección es lo
-único que cambia de una máquina a otra —vive en `.env`, fuera del control de versiones—.
+**Cómo se concreta.** El compose trae su propio servidor NFS, en el servicio `nfs`: los
+archivos viven en su volumen y los demás contenedores lo montan por red. Para correr workers
+en otra máquina se apunta el volumen a un servidor NFS real, con dos variables en `.env`.
 
-Que el servidor NFS quede **afuera** del compose no es comodidad, es necesidad: el volumen
-se monta cuando el contenedor se **crea**, y Compose crea todos los contenedores antes de
-arrancar ninguno. Un servidor NFS declarado como servicio del mismo compose nunca llegaría
-a estar escuchando a tiempo para sus vecinos, ni siquiera con `depends_on`.
+Que el servidor NFS esté adentro obliga a **arrancar en dos pasos** —primero `nfs`, después
+el resto—. Es inevitable: el volumen se monta cuando el contenedor se **crea**, y Compose
+crea todos los contenedores antes de arrancar ninguno, así que `depends_on` no llega a
+tiempo. Se eligió pagar ese costo después de comprobar que montar contra el servidor NFS de
+la máquina anfitriona era inestable: el montaje se rompía cada pocos minutos, con el
+servidor NFS y la red funcionando.
 
 Se usa **NFSv3**, que es lo que sirven tanto macOS como Linux sin configuración adicional.
 Los pasos de instalación y los tropiezos concretos —qué carpetas no se pueden exportar, por
