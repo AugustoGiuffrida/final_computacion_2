@@ -201,7 +201,11 @@ def verify_image(path: Path) -> str:
         raise
 
     except (OSError, ValueError, SyntaxError) as failure:
-        raise InvalidImageError(f"no se pudo abrir como imagen: {failure}") from failure
+        # Pillow pone la ruta completa en su mensaje, y este texto viaja al cliente. La
+        # ruta es del servidor —su volumen, su organización— y no le sirve ni le
+        # corresponde: se deja solo el nombre del archivo.
+        detail = str(failure).replace(str(path), path.name)
+        raise InvalidImageError(f"no se pudo abrir como imagen: {detail}") from failure
 
     if image_format not in config.SUPPORTED_IMAGE_FORMATS:
         supported = ", ".join(sorted(config.SUPPORTED_IMAGE_FORMATS))

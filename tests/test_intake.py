@@ -465,6 +465,17 @@ class ImageVerification(IntakeTestCase):
         with self.assertRaises(process.InvalidImageError):
             process.verify_image(truncated)
 
+    def test_the_rejection_does_not_reveal_the_server_s_paths(self) -> None:
+        """El motivo viaja al cliente: lleva el nombre del archivo, no dónde lo guardamos."""
+        garbage = self.working_directory / "basura.jpg"
+        garbage.write_bytes(b"no soy una imagen")
+
+        with self.assertRaises(process.InvalidImageError) as rejection:
+            process.verify_image(garbage)
+
+        self.assertIn("basura.jpg", str(rejection.exception))
+        self.assertNotIn(str(self.working_directory), str(rejection.exception))
+
     def test_a_rejected_image_produces_the_invalid_verdict(self) -> None:
         """El rechazo llega al veredicto que el servidor traduce a INVALID_IMAGE."""
         fake = self.working_directory / "foto.jpg"

@@ -67,6 +67,13 @@ class ResultValues(unittest.TestCase):
             "2024:03:15 14:32:07",
         )
 
+    def test_timestamps_are_shown_in_local_time(self) -> None:
+        """La misma hora escrita en dos zonas se muestra igual: se convierte, no se copia."""
+        self.assertEqual(
+            formatting.format_timestamp("2026-09-12T13:57:42+00:00"),
+            formatting.format_timestamp("2026-09-12T10:57:42-03:00"),
+        )
+
     def test_privacy_fields_are_only_sensitive_when_present(self) -> None:
         self.assertTrue(formatting.is_privacy_sensitive("gps", [-32.9, -68.8]))
         self.assertFalse(formatting.is_privacy_sensitive("gps", []))

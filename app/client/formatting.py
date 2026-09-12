@@ -84,7 +84,11 @@ def format_size(size_in_bytes: int | float) -> str:
 
 
 def format_timestamp(timestamp: str | None) -> str:
-    """Acorta una marca ISO a 'dd/mm HH:MM:SS', para que entre en una tabla.
+    """Acorta una marca ISO a 'dd/mm HH:MM:SS' en hora local, para que entre en una tabla.
+
+    El servidor manda UTC, con su desfase (`+00:00`). Mostrarla tal cual hace que un
+    trabajo de las 10:57 figure a las 13:57; `astimezone()` sin argumento la pasa a la
+    zona de la máquina donde corre el cliente.
 
     Returns:
         La fecha acortada, un guion si no había marca, o el texto original si no se pudo
@@ -94,7 +98,7 @@ def format_timestamp(timestamp: str | None) -> str:
         return "—"
 
     try:
-        return datetime.fromisoformat(timestamp).strftime("%d/%m %H:%M:%S")
+        return datetime.fromisoformat(timestamp).astimezone().strftime("%d/%m %H:%M:%S")
     except ValueError:
         return timestamp
 
