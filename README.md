@@ -41,7 +41,7 @@ python -m app.client --user ana --action submit --file img_test/grupo.jpg --op s
 | `--file` | la imagen (JPEG o PNG) |
 | `--op` | qué hacerle: ver la tabla de operaciones |
 | `--wait` | esperar a que termine y descargar el resultado. Sin esto vuelve enseguida con el identificador |
-| `-o RUTA` | dónde guardar lo que vuelva |
+| `-o RUTA` | dónde guardar lo que vuelva: un archivo, o una carpeta para usar el nombre sugerido |
 | `--host`, `--port` | dónde está el servidor (por defecto `localhost:9000`) |
 
 ### Las seis operaciones

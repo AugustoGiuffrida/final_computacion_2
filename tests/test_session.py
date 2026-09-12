@@ -439,8 +439,8 @@ class Download(SessionTestCase):
 
 
 
-    async def test_download_without_destination_uses_the_suggested_name(self) -> None:
-        """Sin ruta de salida se usa el nombre que sugiere el servidor."""
+    async def test_a_directory_as_destination_uses_the_suggested_name(self) -> None:
+        """Con una carpeta como destino, el nombre lo pone el servidor."""
 
         async def send_a_named_result(
             reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -456,10 +456,10 @@ class Download(SessionTestCase):
         client_session = await self.connected_session(fake_server)
 
         output_path, _ = await client_session.download(
-            "a3f7b2c1", self.working_directory / "sugerido.webp"
+            "a3f7b2c1", self.working_directory
         )
 
-        self.assertEqual(output_path.name, "sugerido.webp")
+        self.assertEqual(output_path, self.working_directory / "sugerido.webp")
         self.assertEqual(output_path.read_bytes(), b"contenido")
 
 

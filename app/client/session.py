@@ -234,8 +234,9 @@ class ClientSession:
         Los bytes se escriben a medida que llegan, sin acumular el archivo en memoria.
 
         Args:
-            destination: Dónde guardarlo. Si es None se usa el nombre que sugiere el
-                servidor, en el directorio actual.
+            destination: Dónde guardarlo. Una ruta de archivo se usa tal cual; una carpeta
+                existente recibe el archivo adentro, con el nombre que sugiere el
+                servidor; None es esa carpeta pero el directorio actual.
 
         Returns:
             La ruta donde quedó el archivo y el header de la respuesta.
@@ -293,7 +294,16 @@ class ClientSession:
             # directorio de arriba en vez de a un archivo.
             suggested = f"{job_id}.bin"
 
-        output_path = destination or Path(suggested)
+        # Una carpeta como destino significa "adentro, con el nombre sugerido": es lo que
+        # hace `cp`, y lo que necesita una interfaz que no conoce el nombre hasta que llega
+        # la respuesta. Sin esto tendría que bajar a un nombre inventado y renombrar.
+        if destination is None:
+            output_path = Path(suggested)
+        elif destination.is_dir():
+            output_path = destination / suggested
+        else:
+            output_path = destination
+
         await self._write_payload_to_disk(output_path, payload_size, on_progress)
 
         return output_path, response

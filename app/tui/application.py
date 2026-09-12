@@ -545,16 +545,11 @@ class ImagesApp(App):
 
         job_id = str(table.coordinate_to_cell_key((table.cursor_row, 0)).row_key.value)
 
-        # El nombre lo sugiere el servidor y recién se conoce con la respuesta, así que se
-        # baja a un temporal y se renombra al terminar. `.name` por lo mismo que en la
-        # sesión: el nombre viene de afuera y no debe sacar la escritura del directorio.
-        temporary = self.downloads / f".descarga-{job_id}"
+        # Una carpeta como destino: la sesión pone adentro el nombre que sugiere el
+        # servidor, ya saneado y escrito de forma atómica. Acá no hay nada que rehacer.
         try:
             self.downloads.mkdir(parents=True, exist_ok=True)
-            _, response = await self._session.download(job_id, temporary)
-            suggested = Path(response.get("filename", "")).name or f"{job_id}.bin"
-            written = self.downloads / suggested
-            temporary.replace(written)
+            written, _ = await self._session.download(job_id, self.downloads)
         except messages.ServerError as failure:
             self.notify(str(failure), severity="warning", timeout=8)
             return

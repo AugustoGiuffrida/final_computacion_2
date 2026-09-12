@@ -139,7 +139,10 @@ def add_query_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--job-id", help="identificador del trabajo a consultar o descargar")
     group.add_argument(
         "-o", "--output", type=Path,
-        help="dónde guardar el archivo descargado (por defecto, el nombre que sugiera el servidor)",
+        help=(
+            "dónde guardar el archivo descargado; si es una carpeta, adentro con el "
+            "nombre que sugiera el servidor (por defecto, ese nombre en el directorio actual)"
+        ),
     )
     group.add_argument(
         "--limit", type=positive_integer, default=config.DEFAULT_HISTORY_LIMIT,
