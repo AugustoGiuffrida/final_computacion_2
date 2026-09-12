@@ -22,6 +22,12 @@ trabajan en memoria y sirven para mensajes chicos; `send_file` y `stream_payload
 bloques de CHUNK_SIZE y son las que sostienen los archivos grandes sin que la memoria
 crezca con ellos.
 
+La aplicación no usa los dos pares por igual: todo lo que lleva payload es una imagen, así
+que en producción se manda con `send_file` y se recibe con `stream_payload`. El payload en
+memoria —el parámetro `payload` de `send_message` y toda `receive_payload`— está porque el
+formato lo admite y este módulo lo implementa completo, no recortado a lo que un cliente en
+particular necesite. Hoy lo ejercitan las pruebas.
+
 Este módulo no sabe nada de la aplicación: no menciona imágenes, operaciones ni
 identificadores de trabajo. Solo empaqueta y desempaqueta mensajes.
 """
