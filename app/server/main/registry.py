@@ -151,6 +151,8 @@ def job_from_row(row: dict[str, Any]) -> Job:
             datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None
         ),
         error=row["error"],
+        # `.get`: una fila armada a mano en las pruebas puede no traer la columna.
+        result=json.loads(row["result"]) if row.get("result") else None,
         output_path=Path(row["result_path"]) if row["result_path"] else None,
         content_hash=row["sha256"],
     )

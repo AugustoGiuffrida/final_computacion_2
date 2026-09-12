@@ -132,7 +132,7 @@ async def upload_image(
     if response.get("deduplicated"):
         console.print(
             "[yellow]Esta imagen ya había sido procesada con esta misma operación.[/yellow] "
-            "El resultado anterior está listo para descargar."
+            "Se reutiliza el resultado anterior."
         )
 
     return response

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import tempfile
 import unittest
@@ -586,7 +587,10 @@ class EventsReachTheDatabase(IntakeTestCase):
         self.assertEqual(verdict.verdict, ipc.NEW)
 
         channel.record_event(
-            ipc.JobEvent("job-1", ipc.DONE, result_path="/vol/results/job-1/out.jpg")
+            ipc.JobEvent(
+                "job-1", ipc.DONE,
+                result_path="/vol/results/job-1/out.jpg", result={"faces_detected": 1},
+            )
         )
         # El apagado es el punto de sincronización: el pipe conserva el orden, así que el
         # hijo atiende el evento antes que el SHUTDOWN y termina de escribirlo.
@@ -598,6 +602,7 @@ class EventsReachTheDatabase(IntakeTestCase):
 
         self.assertEqual(job["status"], messages.DONE)
         self.assertEqual(job["result_path"], "/vol/results/job-1/out.jpg")
+        self.assertEqual(json.loads(job["result"]), {"faces_detected": 1})
 
     async def test_an_event_gets_no_answer(self) -> None:
         """Nadie espera respuesta, así que el hijo no debe mandar ninguna.

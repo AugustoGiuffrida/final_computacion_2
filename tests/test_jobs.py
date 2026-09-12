@@ -211,6 +211,14 @@ class EventsToTheIntake(unittest.TestCase):
         )
         self.assertEqual(self.intake.events[-1].result_path, "/vol/out.jpg")
 
+    def test_the_result_travels_with_the_done_event(self) -> None:
+        """Es lo que el ingreso guarda para que `status` lo responda tras un reinicio."""
+        self.queue._apply(
+            self.job.job_id, "SUCCESS", {"result": {"faces_detected": 2}}
+        )
+
+        self.assertEqual(self.intake.events[-1].result, {"faces_detected": 2})
+
     def test_a_failure_carries_the_reason(self) -> None:
         self.queue._apply(self.job.job_id, "FAILURE", ValueError("imagen corrupta"))
 

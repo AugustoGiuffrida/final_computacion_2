@@ -16,7 +16,7 @@ from typing import Any
 
 from app.client import session
 from app.common import config, messages, protocol
-from app.server import ipc
+from app.server import database, ipc
 from app.server.main import registry
 from app.server.main.image_server import ImageServer
 
@@ -856,6 +856,34 @@ class TaskEnqueueing(ServerTestCase):
 
 class StatusRequest(ServerTestCase):
     """El pedido `status`: en qué anda un trabajo."""
+
+    async def test_the_result_of_an_archived_job_survives(self) -> None:
+        """Un `inspect` de una ejecución anterior sigue teniendo su informe.
+
+        Es el caso de la demo: si la foto ya se inspeccionó antes, el envío se deduplica
+        contra aquel trabajo, y el cliente muestra lo que `status` responda por él.
+        """
+        writer = database.JobWriter(self.working_directory / "jobs.db")
+        writer.insert(
+            ipc.ReviewRequest(
+                job_id="job-viejo", user="augusto", operation="inspect", parameters={},
+                stored_path=self.working_directory / "foto.jpg",
+            ),
+            "a" * 64,
+        )
+        writer.record_event(
+            ipc.JobEvent("job-viejo", ipc.DONE, result={"faces_detected": 2, "camera": "X"})
+        )
+        writer.close()
+
+        server = await self.running_server()
+        client = await self.connected_client(server)
+
+        response = await client.status("job-viejo")
+
+        self.assertEqual(response["status"], messages.DONE)
+        self.assertFalse(response["has_output"])
+        self.assertEqual(response["result"], {"faces_detected": 2, "camera": "X"})
 
     async def test_a_queued_job_reports_its_state(self) -> None:
         """Un trabajo recién aceptado figura encolado, sin datos de resultado."""

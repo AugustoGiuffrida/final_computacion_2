@@ -208,6 +208,7 @@ class TaskQueue:
                     job_id=job_id,
                     kind=ipc.DONE,
                     result_path=str(job.output_path) if job.output_path else None,
+                    result=job.result,
                 )
             )
             logger.info("trabajo %s terminado", job_id)

@@ -6,6 +6,7 @@ no ahorraría nada y taparía justo lo que hay que verificar.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -262,6 +263,38 @@ class Events(DatabaseTestCase):
         self.assertEqual(result_path, "/vol/results/job-1/out.jpg")
         self.assertIsNone(error)
         self.assertIsNotNone(finished_at)
+
+    def test_finishing_keeps_the_result(self) -> None:
+        """Lo que devolvió la operación sobrevive al índice en memoria.
+
+        Para `inspect` es el resultado entero: sin esto, tras un reinicio el trabajo
+        figura DONE y no tiene nada que mostrar.
+        """
+        self.writer.insert(self.a_request(), "abc123")
+        self.writer.record_event(
+            ipc.JobEvent("job-1", ipc.DONE, result={"faces_detected": 3, "gps": [-32.9, -68.8]})
+        )
+
+        row = database.JobReader(self.database_path).find("job-1")
+        self.assertEqual(json.loads(row["result"]), {"faces_detected": 3, "gps": [-32.9, -68.8]})
+
+    def test_an_older_database_gets_the_new_column(self) -> None:
+        """Una base creada antes de la columna `result` la recibe al abrirse."""
+        older = self.working_directory / "vieja.db"
+        connection = sqlite3.connect(older)
+        connection.execute(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, user TEXT NOT NULL, op TEXT NOT NULL, "
+            "params TEXT NOT NULL, sha256 TEXT NOT NULL, filename TEXT, status TEXT NOT NULL, "
+            "error TEXT, result_path TEXT, created_at TEXT NOT NULL, finished_at TEXT)"
+        )
+        connection.commit()
+        connection.close()
+
+        writer = database.JobWriter(older)
+        self.addCleanup(writer.close)
+
+        columns = {row[1] for row in writer._connection.execute("PRAGMA table_info(jobs)")}
+        self.assertIn("result", columns)
 
     def test_failing_records_the_reason(self) -> None:
         self.writer.insert(self.a_request(), "abc123")

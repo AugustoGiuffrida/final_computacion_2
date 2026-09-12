@@ -104,9 +104,12 @@ class JobEvent:
         detail: El motivo, solo cuando falló.
         result_path: Dónde quedó el resultado, solo cuando terminó bien. Viaja como texto
             porque es lo que guarda la base.
+        result: Lo que devolvió la operación, solo cuando terminó bien. Es lo que
+            responde `status`, y sin guardarlo se perdería con el índice en memoria.
     """
 
     job_id: str
     kind: str
     detail: str | None = None
     result_path: str | None = None
+    result: dict[str, Any] | None = None

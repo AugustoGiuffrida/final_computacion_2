@@ -480,6 +480,7 @@ CREATE TABLE jobs (
   status      TEXT NOT NULL,         -- QUEUED | PROCESSING | DONE | ERROR
   error       TEXT,
   result_path TEXT,
+  result      TEXT,                  -- JSON con lo que devolvió la operación
   created_at  TEXT NOT NULL,
   finished_at TEXT
 );

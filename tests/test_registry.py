@@ -353,3 +353,14 @@ class ListingAcrossBothSources(unittest.TestCase):
         jobs.add(new_job("ana", "clean", {}, "foto.jpg"))
 
         self.assertEqual(len(jobs.list_for("ana", 10)), 1)
+
+    def test_the_result_comes_back_from_the_archive(self) -> None:
+        """Un trabajo de otra ejecución vuelve con lo que devolvió su operación."""
+        self.store("job-viejo")
+        self.writer.record_event(
+            ipc.JobEvent("job-viejo", ipc.DONE, result={"metadata_removed": 7})
+        )
+
+        job = self.a_registry().find("ana", "job-viejo")
+
+        self.assertEqual(job.result, {"metadata_removed": 7})

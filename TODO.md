@@ -29,15 +29,6 @@ mensaje, en vez de colgarse, pero el sistema queda inutilizable hasta que vuelva
 reintenta contra otro nodo. Está fuera del alcance de un trabajo final, pero es la
 limitación que primero aparecería en uso real.
 
-### El `result` de un trabajo no sobrevive a un reinicio
-
-La tabla `jobs` guarda dónde quedó el archivo, pero no los datos que devolvió la
-operación: cuántas caras cubrió, qué metadatos tenía. Viven solo en el índice en memoria.
-Tras un reinicio, un trabajo `DONE` responde `result: {}`, y para `inspect` —que no deja
-archivo— eso es perder el resultado entero.
-
-*Cómo:* una columna `result` con el JSON, escrita con el evento `done`.
-
 ### Limpieza de resultados viejos
 
 Nada borra las imágenes procesadas: `storage/` crece indefinidamente. Debería haber una
