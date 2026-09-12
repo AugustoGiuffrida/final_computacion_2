@@ -89,13 +89,30 @@ def run_intake(connection: Connection, log_level: int, database_path: Path) -> N
 
             # Un evento se guarda y no se contesta: del otro lado no hay nadie esperando.
             if isinstance(request, ipc.JobEvent):
-                records.record_event(request)
+                record(request, records)
                 continue
 
             connection.send(review(request, records))
 
     finally:
         records.close()
+
+
+def record(event: ipc.JobEvent, records: database.JobWriter) -> None:
+    """Guarda un evento sin dejar que una falla de la base mate al proceso.
+
+    Es el mismo criterio que `review`: si la excepción escapara moriría el hijo, se
+    relanzaría, y todas las revisiones en curso vencerían por su plazo. Un evento perdido
+    cuesta una fila en la base; un hijo muerto cuesta todos los clientes que esperaban.
+
+    Args:
+        event: El cambio de estado que mandó el monitor.
+        records: La base donde escribirlo.
+    """
+    try:
+        records.record_event(event)
+    except Exception:
+        logger.exception("no se pudo guardar el evento %s de %s", event.kind, event.job_id)
 
 
 def review(

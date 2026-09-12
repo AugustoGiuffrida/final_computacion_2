@@ -52,9 +52,14 @@ class FakeIntake:
         self.detail = detail
         self.original_job_id = original_job_id
         self.reviewed: list[ipc.ReviewRequest] = []
+        self.events: list[ipc.JobEvent] = []
 
     def start(self) -> None:
         """No hace nada: no hay proceso que lanzar."""
+
+    def record_event(self, event: ipc.JobEvent) -> None:
+        """Anota el evento, como haría el canal de verdad al mandarlo por el pipe."""
+        self.events.append(event)
 
     async def review(self, request: ipc.ReviewRequest) -> ipc.ReviewResponse:
         """Anota el pedido y devuelve el veredicto configurado.
@@ -826,6 +831,25 @@ class TaskEnqueueing(ServerTestCase):
         the_job = next(iter(server.jobs._jobs.values()))
         self.assertEqual(the_job.status, messages.FAILED)
         self.assertIn("no se pudo encolar", the_job.error)
+
+    async def test_a_broker_failure_is_also_recorded_in_the_database(self) -> None:
+        """El ingreso ya escribió la fila como QUEUED: hay que avisarle que falló.
+
+        Sin el evento, la memoria dice FAILED y la base QUEUED, y tras un reinicio gana
+        la base.
+        """
+        server = await self.running_server()
+        server.tasks.failure = ConnectionError("redis no contesta")
+        client = await self.connected_client(server)
+
+        with self.assertRaises(messages.ServerError):
+            await client.submit(self.an_image(), "clean", {})
+
+        the_job = next(iter(server.jobs._jobs.values()))
+        self.assertEqual(len(server.intake.events), 1)
+        event = server.intake.events[0]
+        self.assertEqual((event.job_id, event.kind), (the_job.job_id, ipc.FAILED))
+        self.assertIn("no se pudo encolar", event.detail)
 
 # ──────────────────────── consulta y descarga ────────────────────────
 

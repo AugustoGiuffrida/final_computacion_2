@@ -613,6 +613,23 @@ class EventsReachTheDatabase(IntakeTestCase):
 
         self.assertEqual(channel._pending, {})
 
+    async def test_a_bad_event_does_not_kill_the_child(self) -> None:
+        """Un evento que la base rechaza se pierde con registro, sin matar al hijo.
+
+        Un evento de un trabajo que nunca se insertó viola la clave foránea de `events`.
+        Si el hijo muriera, se relanzaría con otro pid y las revisiones en curso
+        vencerían; el pipe conserva el orden, así que la revisión de abajo llega después
+        del evento malo y prueba que el mismo hijo sigue atendiendo.
+        """
+        channel = await self.a_real_channel(self.working_directory / "jobs.db")
+        pid_before = channel._process.pid
+
+        channel.record_event(ipc.JobEvent("nunca-existio", ipc.DONE))
+        verdict = await channel.review(self.a_request())
+
+        self.assertEqual(verdict.verdict, ipc.NEW)
+        self.assertEqual(channel._process.pid, pid_before)
+
     def test_an_event_without_a_channel_is_only_logged(self) -> None:
         """Perder un evento no debe romper al monitor que lo mandó."""
         channel = IntakeChannel(log_level=logging.CRITICAL)

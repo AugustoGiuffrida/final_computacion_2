@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -416,7 +417,14 @@ class ImageServer:
             # El broker no está: el trabajo queda registrado como fallido, para que la
             # consulta posterior explique qué pasó en lugar de mostrarlo QUEUED eterno.
             job.status = messages.FAILED
+            job.finished_at = datetime.now(timezone.utc)
             job.error = f"no se pudo encolar: {failure}"
+            # También en la base. El ingreso ya escribió la fila como QUEUED al revisar la
+            # imagen, y sin este evento seguiría así tras un reinicio, cuando la memoria
+            # —que es la única que sabe que falló— ya no está.
+            self.intake.record_event(
+                ipc.JobEvent(job_id=job.job_id, kind=ipc.FAILED, detail=job.error)
+            )
             logger.exception("no se pudo encolar %s", job.job_id)
             raise InternalError("no se pudo encolar el trabajo") from failure
         logger.info(
