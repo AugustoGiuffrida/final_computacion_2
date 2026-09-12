@@ -418,7 +418,9 @@ class ImageServer:
             # consulta posterior explique qué pasó en lugar de mostrarlo QUEUED eterno.
             job.status = messages.FAILED
             job.finished_at = datetime.now(timezone.utc)
-            job.error = f"no se pudo encolar: {failure}"
+            # En una sola línea: Celery arma mensajes de varios renglones, y este texto
+            # va a la base y a la fila "Motivo" que ve el cliente.
+            job.error = f"no se pudo encolar: {' '.join(str(failure).split())}"
             # También en la base. El ingreso ya escribió la fila como QUEUED al revisar la
             # imagen, y sin este evento seguiría así tras un reinicio, cuando la memoria
             # —que es la única que sabe que falló— ya no está.

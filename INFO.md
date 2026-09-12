@@ -95,7 +95,10 @@ traduce los estados de Celery a los del protocolo: `STARTED` → `PROCESSING`, `
 `DONE`, `FAILURE` → `ERROR`.
 
 Como el cliente de Redis es bloqueante, esas consultas van a un hilo del pool con
-`asyncio.to_thread`: un Redis caído no debe congelar el event loop.
+`asyncio.to_thread`: un Redis caído no debe congelar el event loop. Y las conexiones
+tienen un plazo de cinco segundos, porque un Redis **mudo** —vivo pero sin responder—
+no da error: sin plazo, cada consulta se llevaría un hilo del pool para siempre, y el
+cliente que mandó la imagen esperaría con él.
 
 ---
 
