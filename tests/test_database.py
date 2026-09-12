@@ -68,10 +68,10 @@ class CanonicalParameters(DatabaseTestCase):
         Es lo que permite comparar los parámetros como texto en la consulta SQL en vez de
         tener una columna por parámetro posible.
         """
-        primero = database.canonical_parameters({"mode": "blur", "strength": 15})
-        segundo = database.canonical_parameters({"strength": 15, "mode": "blur"})
+        first = database.canonical_parameters({"mode": "blur", "strength": 15})
+        second = database.canonical_parameters({"strength": 15, "mode": "blur"})
 
-        self.assertEqual(primero, segundo)
+        self.assertEqual(first, second)
 
     def test_different_values_give_different_text(self) -> None:
         """Cambiar un valor cambia el texto, que es lo que rompe la coincidencia."""
@@ -91,9 +91,9 @@ class DuplicateSearch(DatabaseTestCase):
         """Mismo usuario, mismo contenido, misma operación y mismos parámetros."""
         self.a_finished_job(self.a_request("job-viejo"), "a" * 64)
 
-        encontrado = self.writer.find_duplicate("ana", "a" * 64, "anonymize", {"mode": "blur"})
+        found = self.writer.find_duplicate("ana", "a" * 64, "anonymize", {"mode": "blur"})
 
-        self.assertEqual(encontrado, "job-viejo")
+        self.assertEqual(found, "job-viejo")
 
     def test_a_job_that_did_not_finish_is_not_reused(self) -> None:
         """Solo se reutilizan trabajos en DONE.
@@ -143,11 +143,11 @@ class DuplicateSearch(DatabaseTestCase):
             "a" * 64,
         )
 
-        encontrado = self.writer.find_duplicate(
+        found = self.writer.find_duplicate(
             "ana", "a" * 64, "anonymize", {"strength": 15, "mode": "blur"}
         )
 
-        self.assertEqual(encontrado, "job-viejo")
+        self.assertEqual(found, "job-viejo")
 
 
 # ──────────────────────── escribir y leer ────────────────────────
@@ -160,12 +160,12 @@ class WritingAndReading(DatabaseTestCase):
         """Los campos vuelven tal como se guardaron."""
         self.writer.insert(self.a_request("job-1", user="ana"), "b" * 64)
 
-        fila = database.JobReader(self.database_path).find("job-1")
+        row = database.JobReader(self.database_path).find("job-1")
 
-        self.assertEqual(fila["user"], "ana")
-        self.assertEqual(fila["op"], "anonymize")
-        self.assertEqual(fila["sha256"], "b" * 64)
-        self.assertEqual(fila["status"], messages.QUEUED)
+        self.assertEqual(row["user"], "ana")
+        self.assertEqual(row["op"], "anonymize")
+        self.assertEqual(row["sha256"], "b" * 64)
+        self.assertEqual(row["status"], messages.QUEUED)
 
     def test_an_unknown_job_is_not_found(self) -> None:
         """Un identificador que no está devuelve None, no una excepción."""

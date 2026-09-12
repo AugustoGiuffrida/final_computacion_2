@@ -15,7 +15,7 @@ from PIL import Image
 
 from app.worker import faces
 
-IMAGEN_CON_CARA = Path(__file__).parent / "imagenes" / "con_cara.jpg"
+IMAGE_WITH_A_FACE = Path(__file__).parent / "imagenes" / "con_cara.jpg"
 
 
 class FaceTestCase(unittest.TestCase):
@@ -43,16 +43,16 @@ class Detection(FaceTestCase):
 
     def test_a_real_face_is_found(self) -> None:
         """En una foto con una cara, devuelve un rectángulo."""
-        found = faces.detect(IMAGEN_CON_CARA)
+        found = faces.detect(IMAGE_WITH_A_FACE)
 
         self.assertEqual(len(found), 1)
 
     def test_the_rectangle_is_inside_the_image(self) -> None:
         """El rectángulo cae dentro de los límites de la imagen."""
-        with Image.open(IMAGEN_CON_CARA) as image:
+        with Image.open(IMAGE_WITH_A_FACE) as image:
             width, height = image.size
 
-        x, y, face_width, face_height = faces.detect(IMAGEN_CON_CARA)[0]
+        x, y, face_width, face_height = faces.detect(IMAGE_WITH_A_FACE)[0]
 
         self.assertGreaterEqual(x, 0)
         self.assertGreaterEqual(y, 0)
@@ -66,11 +66,11 @@ class Detection(FaceTestCase):
         recuadro de 80px en una esquina vacía. `minNeighbors` está subido justamente para
         esto, y esta prueba lo fija.
         """
-        with Image.open(IMAGEN_CON_CARA) as original:
-            grande = self.working_directory / "grande.jpg"
-            original.convert("RGB").resize((1600, 1600)).save(grande, "JPEG", quality=95)
+        with Image.open(IMAGE_WITH_A_FACE) as original:
+            large = self.working_directory / "grande.jpg"
+            original.convert("RGB").resize((1600, 1600)).save(large, "JPEG", quality=95)
 
-        self.assertEqual(len(faces.detect(grande)), len(faces.detect(IMAGEN_CON_CARA)))
+        self.assertEqual(len(faces.detect(large)), len(faces.detect(IMAGE_WITH_A_FACE)))
 
     def test_an_image_without_faces_returns_an_empty_list(self) -> None:
         """No encontrar nada es un resultado válido, no un error."""
@@ -82,10 +82,10 @@ class Detection(FaceTestCase):
         El proceso de ingreso ya verificó la imagen antes de llegar acá, así que esto es
         una segunda línea de defensa.
         """
-        basura = self.working_directory / "basura.jpg"
-        basura.write_bytes(b"no soy una imagen")
+        garbage = self.working_directory / "basura.jpg"
+        garbage.write_bytes(b"no soy una imagen")
 
-        self.assertEqual(faces.detect(basura), [])
+        self.assertEqual(faces.detect(garbage), [])
 
 
 # ──────────────────────── el cubrimiento ────────────────────────
@@ -97,8 +97,8 @@ class Covering(FaceTestCase):
     def setUp(self) -> None:
         """Carga la imagen y detecta su cara una sola vez."""
         super().setUp()
-        self.image = Image.open(IMAGEN_CON_CARA).convert("RGB")
-        self.faces = faces.detect(IMAGEN_CON_CARA)
+        self.image = Image.open(IMAGE_WITH_A_FACE).convert("RGB")
+        self.faces = faces.detect(IMAGE_WITH_A_FACE)
         self.addCleanup(self.image.close)
 
     def difference_in_the_face(self, covered: Image.Image) -> float:
@@ -144,19 +144,19 @@ class Covering(FaceTestCase):
 
         Es lo que hace que `--strength` signifique algo para el usuario.
         """
-        leve = self.difference_in_the_face(faces.cover(self.image, self.faces, "blur", 5))
-        fuerte = self.difference_in_the_face(faces.cover(self.image, self.faces, "blur", 40))
+        mild = self.difference_in_the_face(faces.cover(self.image, self.faces, "blur", 5))
+        strong = self.difference_in_the_face(faces.cover(self.image, self.faces, "blur", 40))
 
-        self.assertGreater(fuerte, leve)
+        self.assertGreater(strong, mild)
 
     def test_the_rest_of_the_image_is_untouched(self) -> None:
         """Solo se toca la zona de las caras: el resto queda idéntico."""
         covered = faces.cover(self.image, self.faces, "box", 15)
 
-        esquina = (0, 0, 40, 40)  # lejos de la cara, que está en el centro
+        corner = (0, 0, 40, 40)  # lejos de la cara, que está en el centro
         self.assertEqual(
-            list(self.image.crop(esquina).getdata()),
-            list(covered.crop(esquina).getdata()),
+            list(self.image.crop(corner).getdata()),
+            list(covered.crop(corner).getdata()),
         )
 
     def test_without_faces_the_image_is_unchanged(self) -> None:

@@ -130,25 +130,25 @@ class Coordinates(unittest.TestCase):
     """La conversión de coordenadas EXIF a grados decimales."""
 
     def test_the_southern_hemisphere_is_negative(self) -> None:
-        grados = tasks.degrees_from(
+        degrees = tasks.degrees_from(
             (IFDRational(32, 1), IFDRational(53, 1), IFDRational(220488, 10000)), "S"
         )
 
-        self.assertAlmostEqual(grados, -32.889458, places=5)
+        self.assertAlmostEqual(degrees, -32.889458, places=5)
 
     def test_the_northern_hemisphere_is_positive(self) -> None:
-        grados = tasks.degrees_from(
+        degrees = tasks.degrees_from(
             (IFDRational(40, 1), IFDRational(0, 1), IFDRational(0, 1)), "N"
         )
 
-        self.assertEqual(grados, 40.0)
+        self.assertEqual(degrees, 40.0)
 
     def test_west_is_negative(self) -> None:
-        grados = tasks.degrees_from(
+        degrees = tasks.degrees_from(
             (IFDRational(68, 1), IFDRational(0, 1), IFDRational(0, 1)), "W"
         )
 
-        self.assertEqual(grados, -68.0)
+        self.assertEqual(degrees, -68.0)
 
 
 if __name__ == "__main__":

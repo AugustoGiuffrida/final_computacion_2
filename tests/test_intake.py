@@ -79,13 +79,13 @@ def child_that_sends_garbage(connection, log_level: int, database_path) -> None:
     Simula que del otro lado del pipe llegue cualquier cosa: un mensaje corrupto, una
     versión vieja del hijo, un error de programación de nuestro lado.
     """
-    primero = True
+    first = True
     while True:
         request = connection.recv()
         if request == ipc.SHUTDOWN:
             return
-        if primero:
-            primero = False
+        if first:
+            first = False
             connection.send("esto no es un veredicto")
         else:
             connection.send(
@@ -95,22 +95,22 @@ def child_that_sends_garbage(connection, log_level: int, database_path) -> None:
 
 def child_that_answers_backwards(connection, log_level: int, database_path) -> None:
     """Junta tres pedidos y los contesta al revés, para forzar el desorden."""
-    acumulados = []
+    held_back = []
     while True:
         request = connection.recv()
         if request == ipc.SHUTDOWN:
             return
-        acumulados.append(request)
-        if len(acumulados) == 3:
-            for pendiente in reversed(acumulados):
+        held_back.append(request)
+        if len(held_back) == 3:
+            for held in reversed(held_back):
                 connection.send(
                     ipc.ReviewResponse(
-                        job_id=pendiente.job_id,
+                        job_id=held.job_id,
                         verdict=ipc.NEW,
-                        content_hash=pendiente.job_id * 4,
+                        content_hash=held.job_id * 4,
                     )
                 )
-            acumulados = []
+            held_back = []
 
 
 # ──────────────────────── base de las pruebas ────────────────────────
@@ -343,14 +343,14 @@ class WhenThingsGoWrong(IntakeTestCase):
 
         with mock.patch.object(intake_channel, "REVIEW_TIMEOUT_SECONDS", 0.5):
             with self.assertLogs(level="ERROR"):
-                descartado = await channel.review(self.a_request("job-basura"))
+                discarded = await channel.review(self.a_request("job-basura"))
 
-        self.assertEqual(descartado.verdict, ipc.UNAVAILABLE)
+        self.assertEqual(discarded.verdict, ipc.UNAVAILABLE)
 
         # Y acá está lo que importa: el pedido siguiente se atiende normalmente.
-        siguiente = await channel.review(self.a_request("job-2", "otra.jpg"))
+        following = await channel.review(self.a_request("job-2", "otra.jpg"))
 
-        self.assertEqual(siguiente.verdict, ipc.NEW)
+        self.assertEqual(following.verdict, ipc.NEW)
         self.assertFalse(channel._receiver.done())
 
     async def test_a_broken_pipe_becomes_unavailable_and_not_an_exception(self) -> None:

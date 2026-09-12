@@ -219,28 +219,28 @@ class ResolutionAgainstTheArchive(unittest.TestCase):
         Es lo que permite consultar el estado de algo enviado antes de reiniciar el
         servidor, en vez de responder que no existe.
         """
-        registro = JobRegistry(database.JobReader(self.database_path))
+        jobs = JobRegistry(database.JobReader(self.database_path))
 
-        job = registro.find("ana", "job-viejo")
+        job = jobs.find("ana", "job-viejo")
 
         self.assertEqual(job.operation, "clean")
         self.assertEqual(job.content_hash, "c" * 64)
 
     def test_the_ownership_rule_applies_to_the_archive_too(self) -> None:
         """Venir de la base no exime de la regla de propiedad."""
-        registro = JobRegistry(database.JobReader(self.database_path))
+        jobs = JobRegistry(database.JobReader(self.database_path))
 
         with self.assertRaises(messages.RequestError) as raised:
-            registro.find("luis", "job-viejo")
+            jobs.find("luis", "job-viejo")
 
         self.assertEqual(raised.exception.code, messages.FORBIDDEN)
 
     def test_without_an_archive_only_memory_is_searched(self) -> None:
         """Un registro sin base es solo memoria, que es lo que usan las pruebas."""
-        registro = JobRegistry()
+        jobs = JobRegistry()
 
         with self.assertRaises(messages.RequestError) as raised:
-            registro.find("ana", "job-viejo")
+            jobs.find("ana", "job-viejo")
 
         self.assertEqual(raised.exception.code, messages.JOB_NOT_FOUND)
 
@@ -297,23 +297,23 @@ class ListingAcrossBothSources(unittest.TestCase):
 
     def test_jobs_from_previous_runs_are_listed(self) -> None:
         self.store("job-viejo")
-        registro = self.a_registry()
+        jobs = self.a_registry()
 
-        listado = registro.list_for("ana", 10)
+        listed = jobs.list_for("ana", 10)
 
-        self.assertEqual([job.job_id for job in listado], ["job-viejo"])
+        self.assertEqual([job.job_id for job in listed], ["job-viejo"])
 
     def test_memory_and_archive_are_merged_without_repeating(self) -> None:
         """Un trabajo de esta ejecución está en las dos fuentes y debe aparecer una vez."""
         self.store("job-de-ahora")
-        registro = self.a_registry()
-        en_memoria = new_job("ana", "clean", {}, "foto.jpg")
-        en_memoria.job_id = "job-de-ahora"
-        registro.add(en_memoria)
+        jobs = self.a_registry()
+        in_memory = new_job("ana", "clean", {}, "foto.jpg")
+        in_memory.job_id = "job-de-ahora"
+        jobs.add(in_memory)
 
-        listado = registro.list_for("ana", 10)
+        listed = jobs.list_for("ana", 10)
 
-        self.assertEqual([job.job_id for job in listado], ["job-de-ahora"])
+        self.assertEqual([job.job_id for job in listed], ["job-de-ahora"])
 
     def test_memory_wins_because_it_is_fresher(self) -> None:
         """La base va un paso atrás: el monitor la actualiza recién al mandar el evento.
@@ -321,35 +321,35 @@ class ListingAcrossBothSources(unittest.TestCase):
         Si ganara la base, un trabajo recién terminado se vería PROCESSING un instante.
         """
         self.store("job-1")  # queda en QUEUED en la base
-        registro = self.a_registry()
-        en_memoria = new_job("ana", "clean", {}, "foto.jpg")
-        en_memoria.job_id = "job-1"
-        en_memoria.status = messages.DONE
-        registro.add(en_memoria)
+        jobs = self.a_registry()
+        in_memory = new_job("ana", "clean", {}, "foto.jpg")
+        in_memory.job_id = "job-1"
+        in_memory.status = messages.DONE
+        jobs.add(in_memory)
 
-        self.assertEqual(registro.list_for("ana", 10)[0].status, messages.DONE)
+        self.assertEqual(jobs.list_for("ana", 10)[0].status, messages.DONE)
 
     def test_the_archive_does_not_leak_other_users(self) -> None:
         self.store("de-beto", user="beto")
-        registro = self.a_registry()
+        jobs = self.a_registry()
 
-        self.assertEqual(registro.list_for("ana", 10), [])
+        self.assertEqual(jobs.list_for("ana", 10), [])
 
     def test_the_limit_applies_to_the_union(self) -> None:
         """El límite es del resultado, no de cada fuente por separado."""
         for number in range(3):
             self.store(f"viejo-{number}")
-        registro = self.a_registry()
+        jobs = self.a_registry()
         for number in range(3):
-            reciente = new_job("ana", "clean", {}, "foto.jpg")
-            reciente.job_id = f"nuevo-{number}"
-            registro.add(reciente)
+            recent = new_job("ana", "clean", {}, "foto.jpg")
+            recent.job_id = f"nuevo-{number}"
+            jobs.add(recent)
 
-        self.assertEqual(len(registro.list_for("ana", 4)), 4)
+        self.assertEqual(len(jobs.list_for("ana", 4)), 4)
 
     def test_without_an_archive_it_is_only_memory(self) -> None:
         """Las pruebas que no necesitan base siguen funcionando igual."""
-        registro = JobRegistry()
-        registro.add(new_job("ana", "clean", {}, "foto.jpg"))
+        jobs = JobRegistry()
+        jobs.add(new_job("ana", "clean", {}, "foto.jpg"))
 
-        self.assertEqual(len(registro.list_for("ana", 10)), 1)
+        self.assertEqual(len(jobs.list_for("ana", 10)), 1)

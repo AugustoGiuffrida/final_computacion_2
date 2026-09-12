@@ -178,13 +178,13 @@ class ImagesApp(App):
         """Abre la conexión, prepara la tabla y arranca el refresco periódico."""
         # Los títulos van en el borde del panel, no en una fila aparte: se lee como un
         # panel y no gasta una línea de alto en cada columna.
-        for identificador, titulo in [
+        for selector, title in [
             ("#images", " Imágenes "),
             ("#operation", " Operación "),
             ("#jobs", " Trabajos "),
             ("#result-panel", " Resultado "),
         ]:
-            self.query_one(identificador).border_title = titulo
+            self.query_one(selector).border_title = title
 
         table = self.query_one("#table", DataTable)
         table.add_column("Estado", width=12)
@@ -362,8 +362,8 @@ class ImagesApp(App):
 
             try:
                 parameters[name] = validator(str(raw))
-            except Exception as falla:
-                raise ValueError(f"{PARAMETER_LABELS.get(name, name)}: {falla}") from None
+            except Exception as failure:
+                raise ValueError(f"{PARAMETER_LABELS.get(name, name)}: {failure}") from None
 
         return parameters
 
@@ -395,29 +395,29 @@ class ImagesApp(App):
         try:
             session.validate_image_file(self.selected)
             parameters = self.collect_parameters()
-        except (session.LocalValidationError, ValueError) as falla:
-            self.notify(str(falla), severity="error", timeout=8)
+        except (session.LocalValidationError, ValueError) as failure:
+            self.notify(str(failure), severity="error", timeout=8)
             return
 
-        barra = self.query_one("#upload", ProgressBar)
-        barra.display = True
-        barra.update(total=self.selected.stat().st_size, progress=0)
+        bar = self.query_one("#upload", ProgressBar)
+        bar.display = True
+        bar.update(total=self.selected.stat().st_size, progress=0)
 
-        def avance(enviados: int, _total: int) -> None:
-            barra.update(progress=enviados)
+        def show_progress(sent_bytes: int, _total: int) -> None:
+            bar.update(progress=sent_bytes)
 
         button = self.query_one("#send", Button)
         button.disabled = True
         try:
             response = await self._session.submit(
-                self.selected, self.operation, parameters, on_progress=avance
+                self.selected, self.operation, parameters, on_progress=show_progress
             )
-        except (messages.ServerError, OSError) as falla:
-            self.notify(f"El servidor rechazó el envío: {falla}", severity="error", timeout=10)
+        except (messages.ServerError, OSError) as failure:
+            self.notify(f"El servidor rechazó el envío: {failure}", severity="error", timeout=10)
             return
         finally:
             button.disabled = False
-            barra.display = False
+            bar.display = False
 
         if response.get("deduplicated"):
             self.notify("Ya habías procesado esta imagen: se reutiliza el resultado anterior")
