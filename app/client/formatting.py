@@ -29,20 +29,27 @@ UNKNOWN_STATUS_STYLE = ("dim", "·")
 
 # Nombre en castellano de cada campo del 'result'. Lo que no esté acá se muestra con su
 # nombre crudo, así un campo nuevo del servidor aparece igual en vez de desaparecer.
+#
+# Las claves son las que emiten las tareas en `worker/tasks.py`, y solo esas: una etiqueta
+# para un nombre que el worker no produce no traduce nada, y el campo real sale en inglés.
 RESULT_LABELS = {
-    "faces_detected": "Caras detectadas",
+    # Lo que describe al archivo, de `inspect`.
+    "format": "Formato",
+    "size": "Dimensiones",
+    "mode": "Modo",  # color en `inspect` (RGB), cobertura en `anonymize` (blur)
+    "metadata_entries": "Metadatos",
     "bytes": "Tamaño",
-    "original_bytes": "Tamaño original",
-    "final_bytes": "Tamaño final",
-    "content_type": "Tipo de archivo",
+    # Lo que revela de quien sacó la foto, también de `inspect`.
     "gps": "Coordenadas GPS",
     "taken_at": "Fecha de captura",
     "camera": "Cámara",
     "serial_number": "Número de serie",
-    "removed_metadata": "Metadatos eliminados",
-    "source_format": "Formato de origen",
-    "target_format": "Formato de destino",
-    "stages": "Etapas aplicadas",
+    # Lo que informa cada operación al terminar.
+    "faces_detected": "Caras detectadas",
+    "metadata_removed": "Metadatos eliminados",
+    "original_bytes": "Tamaño original",
+    "final_bytes": "Tamaño final",
+    "saved_percent": "Ahorro",
 }
 
 # Campos del informe de `inspect` que son, precisamente, la fuga de privacidad que la
@@ -118,23 +125,21 @@ def format_duration(started_at: str | None, finished_at: str | None) -> str:
 
 
 def format_result_value(field: str, value: Any) -> str:
-    """Convierte un valor del 'result' en texto: bytes con unidad, GPS como par, listas
-    separadas por comas."""
+    """Convierte un valor del 'result' en texto: bytes con unidad, dimensiones con la
+    cruz, porcentajes con su signo, listas separadas por comas."""
     if value is None:
         return "—"
 
     if field in BYTE_FIELDS and isinstance(value, (int, float)):
         return format_size(value)
 
-    if field == "taken_at" and isinstance(value, str):
-        return format_timestamp(value)
+    if field == "saved_percent" and isinstance(value, (int, float)):
+        return f"{value} %"
 
-    if field == "gps" and isinstance(value, dict):
-        latitude, longitude = value.get("lat"), value.get("lon")
-        if latitude is None or longitude is None:
-            return "—"
-        return f"{latitude}, {longitude}"
+    if field == "size" and isinstance(value, list) and len(value) == 2:
+        return f"{value[0]} × {value[1]}"
 
+    # Las coordenadas GPS llegan como lista de dos y caen acá: "-32.889458, -68.845839".
     if isinstance(value, list):
         return ", ".join(str(item) for item in value) if value else "—"
 

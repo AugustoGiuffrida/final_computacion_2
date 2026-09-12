@@ -260,7 +260,7 @@ es duplicada (ver sección 5.2).
 
 ```json
 {"type": "ok", "job_id": "a3f7b2c1-…", "status": "DONE", "has_output": true,
- "result": {"faces_detected": 3, "bytes": 284915, "content_type": "image/jpeg"},
+ "result": {"faces_detected": 3, "mode": "blur"},
  "payload_size": 0}
 ```
 
@@ -268,11 +268,17 @@ es duplicada (ver sección 5.2).
 
 ```json
 {"type": "ok", "job_id": "b8e1d4f2-…", "status": "DONE", "has_output": false,
- "result": {"faces_detected": 2, "gps": {"lat": -32.889, "lon": -68.845},
-            "taken_at": "2026-07-04T18:22:10", "camera": "iPhone 14",
-            "bytes": 3145728},
+ "result": {"format": "JPEG", "size": [1280, 1024], "mode": "RGB",
+            "metadata_entries": 7, "bytes": 320284,
+            "gps": [-32.889458, -68.845839], "taken_at": "2024:03:15 14:32:07",
+            "camera": "Apple iPhone 13", "serial_number": "F2LW48ZBQ1GH",
+            "faces_detected": 12},
  "payload_size": 0}
 ```
+
+`gps`, `taken_at`, `camera` y `serial_number` **solo aparecen si la foto los tiene**: una
+imagen sin GPS no trae una fila vacía, no trae la fila. La fecha va tal como la escribe la
+cámara (`AAAA:MM:DD HH:MM:SS`, el formato de EXIF), sin convertir.
 
 **Respuesta** (todavía procesando):
 

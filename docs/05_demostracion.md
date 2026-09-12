@@ -225,10 +225,10 @@ python -m app.client --user ana --host 127.0.0.1 --port 9876 \
 
 ```
 ╭─────────────────────── Resultado ────────────────────────╮
-│           Format  JPEG                                   │
-│             Size  1280, 1024                             │
-│             Mode  RGB                                    │
-│ Metadata entries  7                                      │
+│          Formato  JPEG                                   │
+│      Dimensiones  1280 × 1024                            │
+│             Modo  RGB                                    │
+│        Metadatos  7                                      │
 │           Tamaño  312.8 KB                               │
 │  Coordenadas GPS  -32.889458, -68.845839  (dato privado) │
 │ Fecha de captura  2024:03:15 14:32:07  (dato privado)    │
@@ -284,14 +284,14 @@ python -m app.client --user ana --host 127.0.0.1 --port 9876 \
 │    Imagen  con_metadatos.jpg (312.8 KB)         │
 ╰─────────────────────────────────────────────────╯
 
-╭──────── Resultado ─────────╮
-│ Metadata removed  7        │
-│ Caras detectadas  12       │
-│             Mode  blur     │
-│  Tamaño original  312.8 KB │
-│     Tamaño final  78.2 KB  │
-│    Saved percent  75       │
-╰────────────────────────────╯
+╭────────── Resultado ───────────╮
+│ Metadatos eliminados  7        │
+│     Caras detectadas  12       │
+│                 Modo  blur     │
+│      Tamaño original  312.8 KB │
+│         Tamaño final  78.2 KB  │
+│               Ahorro  75 %     │
+╰────────────────────────────────╯
 
 ✓ Resultado guardado en /tmp/saneada.jpg (78.3 KB)
 ```
@@ -364,14 +364,14 @@ python -m app.client --user ana --host 127.0.0.1 --port 9876 \
 ```
 
 ```
-╭──────── Resultado ─────────╮
-│           Format  JPEG     │
-│             Size  900, 720 │
-│             Mode  RGB      │
-│ Metadata entries  0        │
-│           Tamaño  78.2 KB  │
-│ Caras detectadas  1        │
-╰────────────────────────────╯
+╭───────── Resultado ─────────╮
+│          Formato  JPEG      │
+│      Dimensiones  900 × 720 │
+│             Modo  RGB       │
+│        Metadatos  0         │
+│           Tamaño  78.2 KB   │
+│ Caras detectadas  1         │
+╰─────────────────────────────╯
 ```
 
 Puesto al lado de la apertura, ahí está todo lo que hizo el sistema:
@@ -713,20 +713,23 @@ python -m app.client --user ana --host 127.0.0.1 --port 9876 \
 ```
 
 ```
-╭───────── Resultado ──────────╮
-│           Format  JPEG       │
-│             Size  1280, 1024 │
-│             Mode  RGB        │
-│ Metadata entries  2          │
-│          Has gps  no         │
-╰──────────────────────────────╯
+╭─────────────────── Resultado ────────────────────╮
+│          Formato  JPEG                           │
+│      Dimensiones  1280 × 1024                    │
+│             Modo  RGB                            │
+│        Metadatos  2                              │
+│           Tamaño  312.2 KB                       │
+│           Cámara  CamaraDePrueba  (dato privado) │
+│ Caras detectadas  12                             │
+╰──────────────────────────────────────────────────╯
 
 Esta operación no genera archivo: su resultado es el informe de arriba.
 ```
 
 Es la única sin archivo de salida, y por eso pedirle una descarga responde `NO_OUTPUT`.
-`Has gps` es el dato que más impresiona: con una foto sacada del celular diría **sí**, y
-serían las coordenadas de dónde se tomó.
+Comparar esta salida con la de `con_metadatos.jpg` del Paso 2 es el punto: **los campos
+privados no aparecen vacíos, no aparecen**. Esta foto no tiene GPS ni fecha, y el informe
+no tiene esas filas.
 
 **`clean`** borra los metadatos y **no toca un solo píxel**:
 
@@ -766,7 +769,7 @@ python -m app.client --user ana --host 127.0.0.1 --port 9876 \
 ```
 │  Tamaño original  233.3 KB │
 │     Tamaño final  61.4 KB  │
-│    Saved percent  74       │
+│           Ahorro  74 %     │
 ```
 
 De 752×600 a 600×479 y de 233 KB a 61 KB: un 74% menos.

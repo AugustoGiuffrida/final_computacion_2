@@ -351,18 +351,21 @@ en el result backend. Detecta **dos transiciones**: cuando un worker toma el tra
 o `failed`). En ambos casos envía el evento al proceso de ingreso y actualiza el índice en memoria;
 al terminar, además, saca el trabajo de la lista de vigilancia.
 
-#### Recuperación al reiniciar el servidor
+#### Qué pasa al reiniciar el servidor
 
 El índice en memoria es volátil: si el servidor se reinicia, se olvida de los trabajos que
-estaba vigilando. Pero esos trabajos **siguen ejecutándose**, porque los workers son
-procesos independientes que no se enteran de la caída — que es justamente la propiedad
-que buscábamos al desacoplarlos.
+estaba vigilando. Esos trabajos **siguen ejecutándose** —los workers son procesos
+independientes que no se enteran de la caída, que es justamente la propiedad que buscábamos
+al desacoplarlos— y el worker deja su resultado en el volumen y en Redis como siempre.
 
-El problema sería que nadie detecte su finalización, y quedarían marcados como
-`PROCESSING` para siempre en el historial. Por eso, **al arrancar, el servidor consulta
-SQLite y carga los trabajos en estado no terminal** de vuelta en el índice y en la lista
-del monitor. La vigilancia se retoma donde había quedado, y los trabajos que terminaron
-durante la caída se resuelven en la primera consulta.
+Lo que se pierde es la vigilancia: nadie detecta que terminaron. En la base quedan con el
+último estado que el monitor alcanzó a escribir —`QUEUED` o `PROCESSING`— y así los
+muestra el historial. Los trabajos ya terminados no se ven afectados: están en SQLite y
+el servidor los sirve desde ahí.
+
+Retomar la vigilancia al arrancar es posible —guardar el `task_id` de Celery junto al
+trabajo y volver a consultarlo— y está anotado en `TODO.md` como la primera mejora de
+robustez. No se hizo por alcance, no por dificultad.
 
 ### 4.6 Almacenamiento
 
