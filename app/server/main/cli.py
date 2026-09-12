@@ -1,6 +1,6 @@
 """Línea de comandos del servidor: sus argumentos, su registro y su apagado.
 
-Separa el "cómo se lanza" del "qué hace", que vive en `server.py`. Acá está todo lo que
+Separa el "cómo se lanza" del "qué hace", que vive en `image_server.py`. Acá está todo lo que
 tiene que ver con el proceso en sí: sus argumentos, su registro de actividad y su
 terminación ordenada.
 

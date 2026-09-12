@@ -1,4 +1,5 @@
-# Levanta el sistema completo en una máquina: Redis, el servidor y los workers.
+# Levanta el sistema completo en una máquina: Redis, el servidor NFS, el servidor y los
+# workers.
 #
 # El cliente NO está acá a propósito: es de quien usa el servicio, no parte del
 # despliegue. Se ejecuta desde afuera contra localhost:9000.

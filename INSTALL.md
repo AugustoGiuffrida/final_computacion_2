@@ -313,7 +313,7 @@ contenedor no sirve. Se apunta el volumen a un servidor real con dos variables e
 
 ```bash
 NFS_SERVIDOR=192.168.1.100
-NFS_EXPORT=/exports/imagenes
+NFS_EXPORT=/srv/imagenes
 ```
 
 Sin esas variables se usan `127.0.0.1` y `/`, que son el contenedor `nfs`.

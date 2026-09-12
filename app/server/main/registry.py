@@ -1,3 +1,14 @@
+"""El índice de trabajos del proceso principal: qué aceptó y en qué estado está cada uno.
+
+Es lo que consultan los cuatro pedidos del protocolo. Vive en memoria porque responder
+tiene que ser inmediato; cuando un trabajo no está —es de una ejecución anterior— cae a
+la base, que escribe el proceso de ingreso y acá solo se lee.
+
+Junto con el índice está `Job`, la forma que tiene un trabajo mientras el servidor lo
+maneja, y las dos funciones que lo construyen: al aceptarlo y al reconstruirlo desde una
+fila de la base.
+"""
+
 from __future__ import annotations
 
 import json

@@ -29,6 +29,15 @@ mensaje, en vez de colgarse, pero el sistema queda inutilizable hasta que vuelva
 reintenta contra otro nodo. Está fuera del alcance de un trabajo final, pero es la
 limitación que primero aparecería en uso real.
 
+### El `result` de un trabajo no sobrevive a un reinicio
+
+La tabla `jobs` guarda dónde quedó el archivo, pero no los datos que devolvió la
+operación: cuántas caras cubrió, qué metadatos tenía. Viven solo en el índice en memoria.
+Tras un reinicio, un trabajo `DONE` responde `result: {}`, y para `inspect` —que no deja
+archivo— eso es perder el resultado entero.
+
+*Cómo:* una columna `result` con el JSON, escrita con el evento `done`.
+
 ### Limpieza de resultados viejos
 
 Nada borra las imágenes procesadas: `storage/` crece indefinidamente. Debería haber una
@@ -100,6 +109,10 @@ sería otro cliente hablando el mismo idioma.
 
 ## Deuda técnica menor
 
+- **`mode` significa dos cosas en el `result`.** `inspect` lo usa para el modo de color
+  (`RGB`) y `anonymize` para cómo cubrió las caras (`blur`). El cliente lo etiqueta como
+  "Modo" a secas, que sirve para los dos, pero renombrar uno —`color_mode`, por ejemplo—
+  sería más honesto. Cambia el protocolo, así que va con una versión.
 - **`--verbose` no llega al proceso hijo.** Sube el detalle del registro del proceso
   principal, pero el de ingreso se queda en INFO: recibe el nivel al construirse el canal.
   Son tres líneas.

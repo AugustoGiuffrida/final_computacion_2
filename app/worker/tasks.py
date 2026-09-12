@@ -179,12 +179,12 @@ def degrees_from(coordinate: tuple, hemisphere: str) -> float:
 
     Args:
         coordinate: Los tres valores que devuelve EXIF.
-        hemisphere: 'N', 'S', 'E' u 'O'; los dos últimos van en negativo.
+        hemisphere: 'N', 'S', 'E' o 'W', como lo escribe EXIF; S y W van en negativo.
 
     Returns:
         La coordenada en grados decimales.
     """
-    degrees, minutes, seconds = (float(parte) for parte in coordinate)
+    degrees, minutes, seconds = (float(value) for value in coordinate)
     decimal = degrees + minutes / 60 + seconds / 3600
 
     return -decimal if hemisphere in ("S", "W") else decimal
@@ -423,7 +423,7 @@ def sanitize_shrink(state: dict[str, Any]) -> dict[str, Any]:
     """Última etapa: recomprime, borra los intermedios y arma la respuesta.
 
     Args:
-        state: Lo que devolvió `sanitize_strip`.
+        state: Lo que devolvió `sanitize_cover`.
 
     Returns:
         `{"output_path": ..., "result": {...}}`, la misma forma que devuelven las
