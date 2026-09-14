@@ -47,8 +47,6 @@ TASK_FOR_OPERATION = {
     "convert": tasks.convert,
 }
 
-# `sanitize` no es una tarea sino tres encadenadas: cada etapa recibe el estado que
-# devolvió la anterior. Va aparte porque se encola distinto que las demás.
 SANITIZE_CHAIN = (tasks.sanitize_strip, tasks.sanitize_cover, tasks.sanitize_shrink)
 
 # Cada cuánto mira el monitor los trabajos en vuelo. Más chico, los cambios de estado se
@@ -117,7 +115,6 @@ class TaskQueue:
             state = {
                 "job_id": job.job_id,
                 "path": str(stored_path),
-                # No cambia en toda la cadena: es contra lo que se informa el ahorro.
                 "original_path": str(stored_path),
                 "parameters": job.parameters,
                 "result": {},

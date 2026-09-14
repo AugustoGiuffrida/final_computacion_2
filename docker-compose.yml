@@ -61,6 +61,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+# Cómo llega una imagen al disco:
+#
+#   servidor escribe en /mnt/imagenes
+#      → imagenes manda eso por la red a 127.0.0.1:2049
+#      → ahí atiende el proceso NFS del contenedor nfs
+#      → que lo escribe en su /data
+#      → que es datos
 volumes:
   imagenes:
     driver: local
