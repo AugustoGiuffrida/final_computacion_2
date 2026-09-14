@@ -45,21 +45,6 @@ def canonical_parameters(parameters: dict[str, Any]) -> str:
     return json.dumps(parameters, sort_keys=True, separators=(",", ":"))
 
 
-def add_missing_columns(connection: sqlite3.Connection) -> None:
-    """Agrega a `jobs` las columnas que el esquema tiene y la base todavía no.
-
-    `CREATE TABLE IF NOT EXISTS` deja intacta una tabla que ya existía, así que una
-    columna nueva en `schema.sql` no llega a las bases creadas antes. Esto es la
-    migración mínima: una lista, y `ALTER TABLE` para lo que falte.
-    """
-    existing = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
-
-    for column in ("result TEXT",):
-        name = column.split()[0]
-        if name not in existing:
-            connection.execute(f"ALTER TABLE jobs ADD COLUMN {column}")
-
-
 class JobWriter:
     """El único que escribe en la base. Lo usa el proceso de ingreso."""
 
@@ -73,7 +58,6 @@ class JobWriter:
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.executescript(SCHEMA_PATH.read_text())
-        add_missing_columns(self._connection)
         self._connection.commit()
 
     def find_duplicate(

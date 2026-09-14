@@ -190,5 +190,5 @@ volumen de imágenes.
 python -m unittest discover -s tests -t .
 ```
 
-243 pruebas. Levantan servidores reales en puertos libres, lanzan procesos hijos de verdad
+242 pruebas. Levantan servidores reales en puertos libres, lanzan procesos hijos de verdad
 y usan bases SQLite temporales. No necesitan Redis: la cola se sustituye por un doble.

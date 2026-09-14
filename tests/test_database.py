@@ -278,24 +278,6 @@ class Events(DatabaseTestCase):
         row = database.JobReader(self.database_path).find("job-1")
         self.assertEqual(json.loads(row["result"]), {"faces_detected": 3, "gps": [-32.9, -68.8]})
 
-    def test_an_older_database_gets_the_new_column(self) -> None:
-        """Una base creada antes de la columna `result` la recibe al abrirse."""
-        older = self.working_directory / "vieja.db"
-        connection = sqlite3.connect(older)
-        connection.execute(
-            "CREATE TABLE jobs (id TEXT PRIMARY KEY, user TEXT NOT NULL, op TEXT NOT NULL, "
-            "params TEXT NOT NULL, sha256 TEXT NOT NULL, filename TEXT, status TEXT NOT NULL, "
-            "error TEXT, result_path TEXT, created_at TEXT NOT NULL, finished_at TEXT)"
-        )
-        connection.commit()
-        connection.close()
-
-        writer = database.JobWriter(older)
-        self.addCleanup(writer.close)
-
-        columns = {row[1] for row in writer._connection.execute("PRAGMA table_info(jobs)")}
-        self.assertIn("result", columns)
-
     def test_failing_records_the_reason(self) -> None:
         self.writer.insert(self.a_request(), "abc123")
         self.writer.record_event(
