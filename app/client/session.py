@@ -94,11 +94,6 @@ class ClientSession:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
-        # Un pedido por vez sobre esta conexión. El protocolo es un diálogo estricto —se
-        # manda uno y se lee su respuesta— así que dos pedidos superpuestos se llevarían
-        # la respuesta del otro. El cliente de terminal nunca lo intenta; una interfaz que
-        # refresca sola mientras el usuario opera, sí. El candado hace que no dependa de
-        # que quien la use se acuerde.
         self._one_at_a_time = asyncio.Lock()
 
     # ─────────────────────── ciclo de vida de la conexión ───────────────────────
@@ -128,7 +123,6 @@ class ClientSession:
         try:
             await self._writer.wait_closed()
         except (OSError, asyncio.IncompleteReadError):
-            # El otro extremo ya había cerrado. No hay nada que liberar ni que informar.
             pass
         finally:
             self._reader, self._writer = None, None
@@ -268,7 +262,7 @@ class ClientSession:
         """El cuerpo de `download`, ya con la conexión reservada.
 
         Está aparte para que el pedido, su respuesta y la recepción del archivo queden
-        dentro del mismo bloque del candado sin anidarlo tres niveles.
+        dentro del mismo bloque del candado.
 
         Args:
             request: El pedido ya armado.
@@ -284,19 +278,10 @@ class ClientSession:
         response = await self._receive_response()
         payload_size = protocol.payload_size_of(response)
 
-        # El nombre lo sugiere el SERVIDOR, así que tampoco se puede confiar en él: sin
-        # `.name`, un 'filename' como '../../x.jpg' haría escribir fuera del directorio
-        # actual. Es la misma defensa que aplica `incoming.safe_filename` del otro lado,
-        # sobre el nombre que manda el cliente.
         suggested = Path(response.get("filename", "")).name
         if suggested in ("", ".", ".."):
-            # `.name` quita los directorios pero deja pasar '..', que como ruta apunta al
-            # directorio de arriba en vez de a un archivo.
             suggested = f"{job_id}.bin"
 
-        # Una carpeta como destino significa "adentro, con el nombre sugerido": es lo que
-        # hace `cp`, y lo que necesita una interfaz que no conoce el nombre hasta que llega
-        # la respuesta. Sin esto tendría que bajar a un nombre inventado y renombrar.
         if destination is None:
             output_path = Path(suggested)
         elif destination.is_dir():
@@ -413,8 +398,7 @@ class ClientSession:
             temporary_path.unlink(missing_ok=True)
             raise
 
-        # `os.replace` es atómico dentro del mismo sistema de archivos: el destino pasa de
-        # ser el archivo viejo a ser el nuevo, sin un instante intermedio a medias.
+        # el destino pasa de ser el archivo viejo a ser el nuevo
         os.replace(temporary_path, output_path)
 
     def _require_writer(self) -> asyncio.StreamWriter:

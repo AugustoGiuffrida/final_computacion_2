@@ -120,7 +120,7 @@ class ImageServer:
         ) # host=None hace que getaddrinfo devuelva dos resultados(IPv4 (0.0.0.0) y la de IPv6 (::))
 
         for listening_socket in self._server.sockets:
-            address = listening_socket.getsockname()
+            address = listening_socket.getsockname() #(IP, PORT)
             logger.info(
                 "escuchando en %s (%s)",
                 format_address(address), listening_socket.family.name,
@@ -418,12 +418,8 @@ class ImageServer:
             # consulta posterior explique qué pasó en lugar de mostrarlo QUEUED eterno.
             job.status = messages.FAILED
             job.finished_at = datetime.now(timezone.utc)
-            # En una sola línea: Celery arma mensajes de varios renglones, y este texto
-            # va a la base y a la fila "Motivo" que ve el cliente.
             job.error = f"no se pudo encolar: {' '.join(str(failure).split())}"
-            # También en la base. El ingreso ya escribió la fila como QUEUED al revisar la
-            # imagen, y sin este evento seguiría así tras un reinicio, cuando la memoria
-            # —que es la única que sabe que falló— ya no está.
+            # También en la base.
             self.intake.record_event(
                 ipc.JobEvent(job_id=job.job_id, kind=ipc.FAILED, detail=job.error)
             )

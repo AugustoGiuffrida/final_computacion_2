@@ -68,24 +68,13 @@ class IntakeChannel:
         self.child_entry_point = child_entry_point
         self.database_path = database_path
         self._log_level = log_level
-
-        # Contexto explícito en lugar del método por defecto de la plataforma. Con `fork`
-        # el hijo arrancaría siendo una copia de este proceso entero —el event loop, los
-        # sockets abiertos— en un estado que nadie puede usar. Con `spawn` arranca limpio,
-        # importando solo lo que necesita.
         self._context = multiprocessing.get_context("spawn")
 
-        # Los tres nacen en `_open_channel` o en `start`, y vuelven a None cuando el
-        # canal se cierra. Que puedan estar en None es lo que verifican `review` y `stop`
-        # antes de usarlos.
         self._process = None
         self._pipe = None
         self._receiver = None
         self._stopping = False
 
-        # Un futuro por revisión en curso, indexado por el job_id que va a traer la
-        # respuesta. Puede haber muchas a la vez, una por cliente: este diccionario es lo
-        # que permite saber a quién le corresponde cada respuesta que llega.
         self._pending: dict[str, asyncio.Future[ipc.ReviewResponse]] = {}
 
     def start(self) -> None:
@@ -224,9 +213,6 @@ class IntakeChannel:
         )
         self._process.start()
 
-        # El padre suelta su copia del extremo del hijo. Mientras la conserve, el pipe
-        # tendría dos escritores abiertos y no daría fin de archivo aunque el hijo
-        # muriera: sin esta línea no habría forma de detectar su muerte.
         theirs.close()
 
         self._pipe = ours
@@ -241,8 +227,7 @@ class IntakeChannel:
         """
         while True:
             try:
-                # `poll()` sin argumento no espera nada. Con un argumento —`poll(0.01)`—
-                # bloquearía ese tiempo, que es justo lo que no se puede hacer acá.
+                # Pregunta si hay algo en el pipe
                 if not self._pipe.poll():
                     await asyncio.sleep(POLL_INTERVAL_SECONDS)
                     continue

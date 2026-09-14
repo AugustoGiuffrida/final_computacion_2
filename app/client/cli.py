@@ -354,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         El código de salida del proceso.
     """
     parser = build_parser()
-    arguments = parser.parse_args(argv)
+    arguments = parser.parse_args(argv) #convierte los valores al tipo de datos adecuado y devuelve un objeto de tipo Namespace
     check_action_requirements(parser, arguments)
 
     parameters: dict[str, Any] = {}
