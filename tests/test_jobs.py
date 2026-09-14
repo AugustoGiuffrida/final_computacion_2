@@ -181,6 +181,34 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class PollingWhileEnqueueing(unittest.TestCase):
+    """Leer el backend no se rompe si llega un trabajo nuevo en el medio."""
+
+    def test_a_job_enqueued_during_the_poll_does_not_break_it(self) -> None:
+        """`_poll_backend` corre en un hilo mientras el event loop sigue encolando.
+
+        El asidero falso agrega un trabajo al leer su estado, que es lo que haría
+        `enqueue` si llegara justo en ese momento. Recorriendo el diccionario directo,
+        el `for` levantaría `RuntimeError`.
+        """
+        queue = TaskQueue()
+
+        class HandleThatEnqueuesAnother:
+            parent = None
+
+            @property
+            def state(self) -> str:
+                queue._handles["job-nuevo"] = FakeHandle("PENDING")
+                return "PENDING"
+
+        queue._handles["job-en-vuelo"] = HandleThatEnqueuesAnother()
+
+        snapshots = queue._poll_backend()
+
+        self.assertEqual(snapshots, [("job-en-vuelo", "PENDING", None)])
+        self.assertIn("job-nuevo", queue._handles)
+
+
 class EventsToTheIntake(unittest.TestCase):
     """Que cada cambio de estado se le informe al proceso que escribe la base.
 

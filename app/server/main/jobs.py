@@ -101,7 +101,7 @@ class TaskQueue:
         """
         if self._monitor is not None:
             self._monitor.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError): # no tratarlo como error
                 await self._monitor
             self._monitor = None
 
@@ -164,7 +164,9 @@ class TaskQueue:
             resultado solo se trae cuando el estado es terminal.
         """
         snapshots = []
-        for job_id, handle in self._handles.items():
+        # Sobre una copia: este hilo recorre mientras el event loop sigue encolando, y
+        # agregar una clave durante el `for` lo haría fallar.
+        for job_id, handle in list(self._handles.items()):
             state = handle.state
 
             # Un `chain` devuelve el asidero de la ÚLTIMA tarea, que figura PENDING
