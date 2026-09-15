@@ -16,3 +16,6 @@ __pycache__/
 venv/
 .venv/
 .DS_Store
+
+# Lo que descarga scripts/concurrent_clients.py.
+descargas/
