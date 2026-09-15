@@ -878,6 +878,31 @@ proceso que terminó (código 0) de uno al que terminaron.
 
 Un envío nuevo se atiende normalmente.
 
+### «¿Dónde quedan las imágenes con Docker?»
+
+Los volúmenes viven dentro de la máquina virtual de colima, no en una carpeta de tu Mac, así
+que no los podés abrir con el Finder. Se miran a través de un contenedor que los tenga
+montados.
+
+`datos`, desde el contenedor `nfs`, donde están los bytes de verdad:
+
+```bash
+docker compose exec nfs find /data -type f
+```
+
+`imagenes`, desde el servidor. Tiene que mostrar exactamente lo mismo, porque es el mismo
+contenido visto por NFS:
+
+```bash
+docker compose exec servidor find /mnt/imagenes -type f
+```
+
+`base`, la base de SQLite:
+
+```bash
+docker compose exec servidor ls -la /var/lib/final
+```
+
 ---
 
 ## Lo que todavía no está
